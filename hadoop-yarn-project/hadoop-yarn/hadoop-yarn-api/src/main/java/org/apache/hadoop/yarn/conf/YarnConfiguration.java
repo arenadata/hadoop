@@ -4041,6 +4041,15 @@ public class YarnConfiguration extends Configuration {
   public static final boolean DEFAULT_ROUTER_WEBAPP_PARTIAL_RESULTS_ENABLED =
       false;
 
+  /** The Kerberos keytab for the yarn router.*/
+  public static final String ROUTER_KEYTAB = ROUTER_PREFIX + "keytab.file";
+
+  /** The Kerberos principal for the yarn router.*/
+  public static final String ROUTER_PRINCIPAL = ROUTER_PREFIX + "kerberos.principal";
+
+  /** The Kerberos principal hostname for the yarn router.*/
+  public static final String ROUTER_KERBEROS_PRINCIPAL_HOSTNAME_KEY = ROUTER_PREFIX +
+      "kerberos.principal.hostname";
   ////////////////////////////////
   // CSI Volume configs
   ////////////////////////////////

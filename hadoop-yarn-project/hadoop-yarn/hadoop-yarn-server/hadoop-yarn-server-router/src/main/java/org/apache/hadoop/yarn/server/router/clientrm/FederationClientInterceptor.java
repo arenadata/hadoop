@@ -860,4 +860,14 @@ public class FederationClientInterceptor
       GetNodesToAttributesRequest request) throws YarnException, IOException {
     throw new NotImplementedException("Code is not implemented");
   }
+
+  @VisibleForTesting
+  public FederationStateStoreFacade getFederationFacade() {
+    return federationFacade;
+  }
+
+  @VisibleForTesting
+  public Map<SubClusterId, ApplicationClientProtocol> getClientRMProxies() {
+    return clientRMProxies;
+  }
 }
