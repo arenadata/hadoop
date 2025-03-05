@@ -1351,27 +1351,6 @@ public class DFSUtil {
   }
 
   /**
-   * Add protobuf based protocol to the {@link RPC.Server}.
-   * This engine uses Protobuf 2.5.0. Recommended to upgrade to
-   * Protobuf 3.x from hadoop-thirdparty and use
-   * {@link DFSUtil#addInternalPBProtocol(Configuration, Class, BlockingService,
-   * RPC.Server)}.
-   * @param conf configuration
-   * @param protocol Protocol interface
-   * @param service service that implements the protocol
-   * @param server RPC server to which the protocol &amp; implementation is
-   *               added to
-   * @throws IOException
-   */
-  @Deprecated
-  public static void addPBProtocol(Configuration conf, Class<?> protocol,
-      com.google.protobuf.BlockingService service, RPC.Server server)
-      throws IOException {
-    RPC.setProtocolEngine(conf, protocol, ProtobufRpcEngine.class);
-    server.addProtocol(RPC.RpcKind.RPC_PROTOCOL_BUFFER, protocol, service);
-  }
-
-  /**
    * Map a logical namenode ID to its service address. Use the given
    * nameservice if specified, or the configured one if none is given.
    *

@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ipc;
 
-import com.google.protobuf.Message;
+import   org.apache.hadoop.thirdparty.protobuf.Message;
 
 /**
  *  This engine uses Protobuf 2.5.0. Recommended to upgrade to Protobuf 3.x
