@@ -106,7 +106,8 @@ public class TestRetryCacheWithHA {
       defaultEcPolicy.getNumParityUnits() + 1);
   private static final int CHECKTIMES = 10;
   private static final int ResponseSize = 3;
-  
+  private static boolean OnetimeException = false;
+
   private MiniDFSCluster cluster;
   private DistributedFileSystem dfs;
   private final Configuration conf = new HdfsConfiguration();
@@ -128,6 +129,10 @@ public class TestRetryCacheWithHA {
     @Override
     protected Object invokeMethod(Method method, Object[] args)
         throws Throwable {
+      if (block.get() && OnetimeException) {
+        OnetimeException = false;
+        throw new UnknownHostException("Fake Exception before creating call object");
+      }
       Object result = super.invokeMethod(method, args);
       if (block.get()) {
         throw new UnknownHostException("Fake Exception");
@@ -1210,7 +1215,15 @@ public class TestRetryCacheWithHA {
     AtMostOnceOp op = new DeleteOp(client, "/testfile");
     testClientRetryWithFailover(op);
   }
-  
+
+  @Test (timeout=60000)
+  public void testDelete2() throws Exception {
+    final DFSClient client = genClientWithDummyHandler();
+    OnetimeException = true;
+    AtMostOnceOp op = new DeleteOp(client, "/testfile");
+    testClientRetryWithFailover(op);
+  }
+
   @Test (timeout=60000)
   public void testCreateSymlink() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
