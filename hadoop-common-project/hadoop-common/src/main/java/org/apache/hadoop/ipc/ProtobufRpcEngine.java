@@ -19,11 +19,11 @@
 package org.apache.hadoop.ipc;
 
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.protobuf.BlockingService;
-import org.apache.hadoop.thirdparty.protobuf.Descriptors.MethodDescriptor;
-import org.apache.hadoop.thirdparty.protobuf.Message;
-import org.apache.hadoop.thirdparty.protobuf.ServiceException;
-import org.apache.hadoop.thirdparty.protobuf.TextFormat;
+import com.google.protobuf.BlockingService;
+import com.google.protobuf.Descriptors.MethodDescriptor;
+import com.google.protobuf.Message;
+import com.google.protobuf.ServiceException;
+import com.google.protobuf.TextFormat;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
