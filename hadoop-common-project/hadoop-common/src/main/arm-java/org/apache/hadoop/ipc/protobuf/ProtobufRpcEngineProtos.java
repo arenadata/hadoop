@@ -24,10 +24,10 @@ package org.apache.hadoop.ipc.protobuf;
 public final class ProtobufRpcEngineProtos {
   private ProtobufRpcEngineProtos() {}
   public static void registerAllExtensions(
-      com.google.protobuf.ExtensionRegistry registry) {
+      org.apache.hadoop.thirdparty.protobuf.ExtensionRegistry registry) {
   }
   public interface RequestHeaderProtoOrBuilder
-      extends com.google.protobuf.MessageOrBuilder {
+      extends org.apache.hadoop.thirdparty.protobuf.MessageOrBuilder {
 
     // required string methodName = 1;
     /**
@@ -53,7 +53,7 @@ public final class ProtobufRpcEngineProtos {
      ** Name of the RPC method
      * </pre>
      */
-    com.google.protobuf.ByteString
+    org.apache.hadoop.thirdparty.protobuf.ByteString
         getMethodNameBytes();
 
     // required string declaringClassProtocolName = 2;
@@ -119,7 +119,7 @@ public final class ProtobufRpcEngineProtos {
      * the declaringClassProtocolName field is set to the ProtocolInfoProto
      * </pre>
      */
-    com.google.protobuf.ByteString
+    org.apache.hadoop.thirdparty.protobuf.ByteString
         getDeclaringClassProtocolNameBytes();
 
     // required uint64 clientProtocolVersion = 3;
@@ -154,14 +154,14 @@ public final class ProtobufRpcEngineProtos {
    * </pre>
    */
   public static final class RequestHeaderProto extends
-      com.google.protobuf.GeneratedMessage
+      org.apache.hadoop.thirdparty.protobuf.GeneratedMessage
       implements RequestHeaderProtoOrBuilder {
     // Use RequestHeaderProto.newBuilder() to construct.
-    private RequestHeaderProto(com.google.protobuf.GeneratedMessage.Builder<?> builder) {
+    private RequestHeaderProto(org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.Builder<?> builder) {
       super(builder);
       this.unknownFields = builder.getUnknownFields();
     }
-    private RequestHeaderProto(boolean noInit) { this.unknownFields = com.google.protobuf.UnknownFieldSet.getDefaultInstance(); }
+    private RequestHeaderProto(boolean noInit) { this.unknownFields = org.apache.hadoop.thirdparty.protobuf.UnknownFieldSet.getDefaultInstance(); }
 
     private static final RequestHeaderProto defaultInstance;
     public static RequestHeaderProto getDefaultInstance() {
@@ -172,20 +172,20 @@ public final class ProtobufRpcEngineProtos {
       return defaultInstance;
     }
 
-    private final com.google.protobuf.UnknownFieldSet unknownFields;
+    private final org.apache.hadoop.thirdparty.protobuf.UnknownFieldSet unknownFields;
     @java.lang.Override
-    public final com.google.protobuf.UnknownFieldSet
+    public final org.apache.hadoop.thirdparty.protobuf.UnknownFieldSet
         getUnknownFields() {
       return this.unknownFields;
     }
     private RequestHeaderProto(
-        com.google.protobuf.CodedInputStream input,
-        com.google.protobuf.ExtensionRegistryLite extensionRegistry)
-        throws com.google.protobuf.InvalidProtocolBufferException {
+        org.apache.hadoop.thirdparty.protobuf.CodedInputStream input,
+        org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
+        throws org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException {
       initFields();
       int mutable_bitField0_ = 0;
-      com.google.protobuf.UnknownFieldSet.Builder unknownFields =
-          com.google.protobuf.UnknownFieldSet.newBuilder();
+      org.apache.hadoop.thirdparty.protobuf.UnknownFieldSet.Builder unknownFields =
+          org.apache.hadoop.thirdparty.protobuf.UnknownFieldSet.newBuilder();
       try {
         boolean done = false;
         while (!done) {
@@ -218,40 +218,40 @@ public final class ProtobufRpcEngineProtos {
             }
           }
         }
-      } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      } catch (org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException e) {
         throw e.setUnfinishedMessage(this);
       } catch (java.io.IOException e) {
-        throw new com.google.protobuf.InvalidProtocolBufferException(
+        throw new org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException(
             e.getMessage()).setUnfinishedMessage(this);
       } finally {
         this.unknownFields = unknownFields.build();
         makeExtensionsImmutable();
       }
     }
-    public static final com.google.protobuf.Descriptors.Descriptor
+    public static final org.apache.hadoop.thirdparty.protobuf.Descriptors.Descriptor
         getDescriptor() {
       return org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.internal_static_hadoop_common_RequestHeaderProto_descriptor;
     }
 
-    protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
+    protected org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.FieldAccessorTable
         internalGetFieldAccessorTable() {
       return org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.internal_static_hadoop_common_RequestHeaderProto_fieldAccessorTable
           .ensureFieldAccessorsInitialized(
               org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto.class, org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto.Builder.class);
     }
 
-    public static com.google.protobuf.Parser<RequestHeaderProto> PARSER =
-        new com.google.protobuf.AbstractParser<RequestHeaderProto>() {
+    public static org.apache.hadoop.thirdparty.protobuf.Parser<RequestHeaderProto> PARSER =
+        new org.apache.hadoop.thirdparty.protobuf.AbstractParser<RequestHeaderProto>() {
       public RequestHeaderProto parsePartialFrom(
-          com.google.protobuf.CodedInputStream input,
-          com.google.protobuf.ExtensionRegistryLite extensionRegistry)
-          throws com.google.protobuf.InvalidProtocolBufferException {
+          org.apache.hadoop.thirdparty.protobuf.CodedInputStream input,
+          org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
+          throws org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException {
         return new RequestHeaderProto(input, extensionRegistry);
       }
     };
 
     @java.lang.Override
-    public com.google.protobuf.Parser<RequestHeaderProto> getParserForType() {
+    public org.apache.hadoop.thirdparty.protobuf.Parser<RequestHeaderProto> getParserForType() {
       return PARSER;
     }
 
@@ -281,8 +281,8 @@ public final class ProtobufRpcEngineProtos {
       if (ref instanceof java.lang.String) {
         return (java.lang.String) ref;
       } else {
-        com.google.protobuf.ByteString bs =
-            (com.google.protobuf.ByteString) ref;
+        org.apache.hadoop.thirdparty.protobuf.ByteString bs =
+            (org.apache.hadoop.thirdparty.protobuf.ByteString) ref;
         java.lang.String s = bs.toStringUtf8();
         if (bs.isValidUtf8()) {
           methodName_ = s;
@@ -297,17 +297,17 @@ public final class ProtobufRpcEngineProtos {
      ** Name of the RPC method
      * </pre>
      */
-    public com.google.protobuf.ByteString
+    public org.apache.hadoop.thirdparty.protobuf.ByteString
         getMethodNameBytes() {
       java.lang.Object ref = methodName_;
       if (ref instanceof java.lang.String) {
-        com.google.protobuf.ByteString b =
-            com.google.protobuf.ByteString.copyFromUtf8(
+        org.apache.hadoop.thirdparty.protobuf.ByteString b =
+            org.apache.hadoop.thirdparty.protobuf.ByteString.copyFromUtf8(
                 (java.lang.String) ref);
         methodName_ = b;
         return b;
       } else {
-        return (com.google.protobuf.ByteString) ref;
+        return (org.apache.hadoop.thirdparty.protobuf.ByteString) ref;
       }
     }
 
@@ -362,8 +362,8 @@ public final class ProtobufRpcEngineProtos {
       if (ref instanceof java.lang.String) {
         return (java.lang.String) ref;
       } else {
-        com.google.protobuf.ByteString bs =
-            (com.google.protobuf.ByteString) ref;
+        org.apache.hadoop.thirdparty.protobuf.ByteString bs =
+            (org.apache.hadoop.thirdparty.protobuf.ByteString) ref;
         java.lang.String s = bs.toStringUtf8();
         if (bs.isValidUtf8()) {
           declaringClassProtocolName_ = s;
@@ -391,17 +391,17 @@ public final class ProtobufRpcEngineProtos {
      * the declaringClassProtocolName field is set to the ProtocolInfoProto
      * </pre>
      */
-    public com.google.protobuf.ByteString
+    public org.apache.hadoop.thirdparty.protobuf.ByteString
         getDeclaringClassProtocolNameBytes() {
       java.lang.Object ref = declaringClassProtocolName_;
       if (ref instanceof java.lang.String) {
-        com.google.protobuf.ByteString b =
-            com.google.protobuf.ByteString.copyFromUtf8(
+        org.apache.hadoop.thirdparty.protobuf.ByteString b =
+            org.apache.hadoop.thirdparty.protobuf.ByteString.copyFromUtf8(
                 (java.lang.String) ref);
         declaringClassProtocolName_ = b;
         return b;
       } else {
-        return (com.google.protobuf.ByteString) ref;
+        return (org.apache.hadoop.thirdparty.protobuf.ByteString) ref;
       }
     }
 
@@ -455,7 +455,7 @@ public final class ProtobufRpcEngineProtos {
       return true;
     }
 
-    public void writeTo(com.google.protobuf.CodedOutputStream output)
+    public void writeTo(org.apache.hadoop.thirdparty.protobuf.CodedOutputStream output)
                         throws java.io.IOException {
       getSerializedSize();
       if (((bitField0_ & 0x00000001) == 0x00000001)) {
@@ -477,15 +477,15 @@ public final class ProtobufRpcEngineProtos {
 
       size = 0;
       if (((bitField0_ & 0x00000001) == 0x00000001)) {
-        size += com.google.protobuf.CodedOutputStream
+        size += org.apache.hadoop.thirdparty.protobuf.CodedOutputStream
           .computeBytesSize(1, getMethodNameBytes());
       }
       if (((bitField0_ & 0x00000002) == 0x00000002)) {
-        size += com.google.protobuf.CodedOutputStream
+        size += org.apache.hadoop.thirdparty.protobuf.CodedOutputStream
           .computeBytesSize(2, getDeclaringClassProtocolNameBytes());
       }
       if (((bitField0_ & 0x00000004) == 0x00000004)) {
-        size += com.google.protobuf.CodedOutputStream
+        size += org.apache.hadoop.thirdparty.protobuf.CodedOutputStream
           .computeUInt64Size(3, clientProtocolVersion_);
       }
       size += getUnknownFields().getSerializedSize();
@@ -557,24 +557,24 @@ public final class ProtobufRpcEngineProtos {
     }
 
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(
-        com.google.protobuf.ByteString data)
-        throws com.google.protobuf.InvalidProtocolBufferException {
+        org.apache.hadoop.thirdparty.protobuf.ByteString data)
+        throws org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException {
       return PARSER.parseFrom(data);
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(
-        com.google.protobuf.ByteString data,
-        com.google.protobuf.ExtensionRegistryLite extensionRegistry)
-        throws com.google.protobuf.InvalidProtocolBufferException {
+        org.apache.hadoop.thirdparty.protobuf.ByteString data,
+        org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
+        throws org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException {
       return PARSER.parseFrom(data, extensionRegistry);
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(byte[] data)
-        throws com.google.protobuf.InvalidProtocolBufferException {
+        throws org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException {
       return PARSER.parseFrom(data);
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(
         byte[] data,
-        com.google.protobuf.ExtensionRegistryLite extensionRegistry)
-        throws com.google.protobuf.InvalidProtocolBufferException {
+        org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
+        throws org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException {
       return PARSER.parseFrom(data, extensionRegistry);
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(java.io.InputStream input)
@@ -583,7 +583,7 @@ public final class ProtobufRpcEngineProtos {
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(
         java.io.InputStream input,
-        com.google.protobuf.ExtensionRegistryLite extensionRegistry)
+        org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
         throws java.io.IOException {
       return PARSER.parseFrom(input, extensionRegistry);
     }
@@ -593,18 +593,18 @@ public final class ProtobufRpcEngineProtos {
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseDelimitedFrom(
         java.io.InputStream input,
-        com.google.protobuf.ExtensionRegistryLite extensionRegistry)
+        org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
         throws java.io.IOException {
       return PARSER.parseDelimitedFrom(input, extensionRegistry);
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(
-        com.google.protobuf.CodedInputStream input)
+        org.apache.hadoop.thirdparty.protobuf.CodedInputStream input)
         throws java.io.IOException {
       return PARSER.parseFrom(input);
     }
     public static org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parseFrom(
-        com.google.protobuf.CodedInputStream input,
-        com.google.protobuf.ExtensionRegistryLite extensionRegistry)
+        org.apache.hadoop.thirdparty.protobuf.CodedInputStream input,
+        org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
         throws java.io.IOException {
       return PARSER.parseFrom(input, extensionRegistry);
     }
@@ -618,7 +618,7 @@ public final class ProtobufRpcEngineProtos {
 
     @java.lang.Override
     protected Builder newBuilderForType(
-        com.google.protobuf.GeneratedMessage.BuilderParent parent) {
+        org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.BuilderParent parent) {
       Builder builder = new Builder(parent);
       return builder;
     }
@@ -636,14 +636,14 @@ public final class ProtobufRpcEngineProtos {
      * </pre>
      */
     public static final class Builder extends
-        com.google.protobuf.GeneratedMessage.Builder<Builder>
+        org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.Builder<Builder>
        implements org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProtoOrBuilder {
-      public static final com.google.protobuf.Descriptors.Descriptor
+      public static final org.apache.hadoop.thirdparty.protobuf.Descriptors.Descriptor
           getDescriptor() {
         return org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.internal_static_hadoop_common_RequestHeaderProto_descriptor;
       }
 
-      protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
+      protected org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.FieldAccessorTable
           internalGetFieldAccessorTable() {
         return org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.internal_static_hadoop_common_RequestHeaderProto_fieldAccessorTable
             .ensureFieldAccessorsInitialized(
@@ -656,12 +656,12 @@ public final class ProtobufRpcEngineProtos {
       }
 
       private Builder(
-          com.google.protobuf.GeneratedMessage.BuilderParent parent) {
+          org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.BuilderParent parent) {
         super(parent);
         maybeForceBuilderInitialization();
       }
       private void maybeForceBuilderInitialization() {
-        if (com.google.protobuf.GeneratedMessage.alwaysUseFieldBuilders) {
+        if (org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.alwaysUseFieldBuilders) {
         }
       }
       private static Builder create() {
@@ -683,7 +683,7 @@ public final class ProtobufRpcEngineProtos {
         return create().mergeFrom(buildPartial());
       }
 
-      public com.google.protobuf.Descriptors.Descriptor
+      public org.apache.hadoop.thirdparty.protobuf.Descriptors.Descriptor
           getDescriptorForType() {
         return org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.internal_static_hadoop_common_RequestHeaderProto_descriptor;
       }
@@ -721,7 +721,7 @@ public final class ProtobufRpcEngineProtos {
         return result;
       }
 
-      public Builder mergeFrom(com.google.protobuf.Message other) {
+      public Builder mergeFrom(org.apache.hadoop.thirdparty.protobuf.Message other) {
         if (other instanceof org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto) {
           return mergeFrom((org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto)other);
         } else {
@@ -766,13 +766,13 @@ public final class ProtobufRpcEngineProtos {
       }
 
       public Builder mergeFrom(
-          com.google.protobuf.CodedInputStream input,
-          com.google.protobuf.ExtensionRegistryLite extensionRegistry)
+          org.apache.hadoop.thirdparty.protobuf.CodedInputStream input,
+          org.apache.hadoop.thirdparty.protobuf.ExtensionRegistryLite extensionRegistry)
           throws java.io.IOException {
         org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto parsedMessage = null;
         try {
           parsedMessage = PARSER.parsePartialFrom(input, extensionRegistry);
-        } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+        } catch (org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException e) {
           parsedMessage = (org.apache.hadoop.ipc.protobuf.ProtobufRpcEngineProtos.RequestHeaderProto) e.getUnfinishedMessage();
           throw e;
         } finally {
@@ -806,7 +806,7 @@ public final class ProtobufRpcEngineProtos {
       public java.lang.String getMethodName() {
         java.lang.Object ref = methodName_;
         if (!(ref instanceof java.lang.String)) {
-          java.lang.String s = ((com.google.protobuf.ByteString) ref)
+          java.lang.String s = ((org.apache.hadoop.thirdparty.protobuf.ByteString) ref)
               .toStringUtf8();
           methodName_ = s;
           return s;
@@ -821,17 +821,17 @@ public final class ProtobufRpcEngineProtos {
        ** Name of the RPC method
        * </pre>
        */
-      public com.google.protobuf.ByteString
+      public org.apache.hadoop.thirdparty.protobuf.ByteString
           getMethodNameBytes() {
         java.lang.Object ref = methodName_;
         if (ref instanceof String) {
-          com.google.protobuf.ByteString b =
-              com.google.protobuf.ByteString.copyFromUtf8(
+          org.apache.hadoop.thirdparty.protobuf.ByteString b =
+              org.apache.hadoop.thirdparty.protobuf.ByteString.copyFromUtf8(
                   (java.lang.String) ref);
           methodName_ = b;
           return b;
         } else {
-          return (com.google.protobuf.ByteString) ref;
+          return (org.apache.hadoop.thirdparty.protobuf.ByteString) ref;
         }
       }
       /**
@@ -872,7 +872,7 @@ public final class ProtobufRpcEngineProtos {
        * </pre>
        */
       public Builder setMethodNameBytes(
-          com.google.protobuf.ByteString value) {
+          org.apache.hadoop.thirdparty.protobuf.ByteString value) {
         if (value == null) {
     throw new NullPointerException();
   }
@@ -930,7 +930,7 @@ public final class ProtobufRpcEngineProtos {
       public java.lang.String getDeclaringClassProtocolName() {
         java.lang.Object ref = declaringClassProtocolName_;
         if (!(ref instanceof java.lang.String)) {
-          java.lang.String s = ((com.google.protobuf.ByteString) ref)
+          java.lang.String s = ((org.apache.hadoop.thirdparty.protobuf.ByteString) ref)
               .toStringUtf8();
           declaringClassProtocolName_ = s;
           return s;
@@ -958,17 +958,17 @@ public final class ProtobufRpcEngineProtos {
        * the declaringClassProtocolName field is set to the ProtocolInfoProto
        * </pre>
        */
-      public com.google.protobuf.ByteString
+      public org.apache.hadoop.thirdparty.protobuf.ByteString
           getDeclaringClassProtocolNameBytes() {
         java.lang.Object ref = declaringClassProtocolName_;
         if (ref instanceof String) {
-          com.google.protobuf.ByteString b =
-              com.google.protobuf.ByteString.copyFromUtf8(
+          org.apache.hadoop.thirdparty.protobuf.ByteString b =
+              org.apache.hadoop.thirdparty.protobuf.ByteString.copyFromUtf8(
                   (java.lang.String) ref);
           declaringClassProtocolName_ = b;
           return b;
         } else {
-          return (com.google.protobuf.ByteString) ref;
+          return (org.apache.hadoop.thirdparty.protobuf.ByteString) ref;
         }
       }
       /**
@@ -1048,7 +1048,7 @@ public final class ProtobufRpcEngineProtos {
        * </pre>
        */
       public Builder setDeclaringClassProtocolNameBytes(
-          com.google.protobuf.ByteString value) {
+          org.apache.hadoop.thirdparty.protobuf.ByteString value) {
         if (value == null) {
     throw new NullPointerException();
   }
@@ -1118,17 +1118,17 @@ public final class ProtobufRpcEngineProtos {
     // @@protoc_insertion_point(class_scope:hadoop.common.RequestHeaderProto)
   }
 
-  private static com.google.protobuf.Descriptors.Descriptor
+  private static org.apache.hadoop.thirdparty.protobuf.Descriptors.Descriptor
     internal_static_hadoop_common_RequestHeaderProto_descriptor;
   private static
-    com.google.protobuf.GeneratedMessage.FieldAccessorTable
+    org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.FieldAccessorTable
       internal_static_hadoop_common_RequestHeaderProto_fieldAccessorTable;
 
-  public static com.google.protobuf.Descriptors.FileDescriptor
+  public static org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor
       getDescriptor() {
     return descriptor;
   }
-  private static com.google.protobuf.Descriptors.FileDescriptor
+  private static org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor
       descriptor;
   static {
     java.lang.String[] descriptorData = {
@@ -1139,23 +1139,23 @@ public final class ProtobufRpcEngineProtos {
       "che.hadoop.ipc.protobufB\027ProtobufRpcEngi" +
       "neProtos\240\001\001"
     };
-    com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner assigner =
-      new com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner() {
-        public com.google.protobuf.ExtensionRegistry assignDescriptors(
-            com.google.protobuf.Descriptors.FileDescriptor root) {
+    org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner assigner =
+      new org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner() {
+        public org.apache.hadoop.thirdparty.protobuf.ExtensionRegistry assignDescriptors(
+            org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor root) {
           descriptor = root;
           internal_static_hadoop_common_RequestHeaderProto_descriptor =
             getDescriptor().getMessageTypes().get(0);
           internal_static_hadoop_common_RequestHeaderProto_fieldAccessorTable = new
-            com.google.protobuf.GeneratedMessage.FieldAccessorTable(
+            org.apache.hadoop.thirdparty.protobuf.GeneratedMessage.FieldAccessorTable(
               internal_static_hadoop_common_RequestHeaderProto_descriptor,
               new java.lang.String[] { "MethodName", "DeclaringClassProtocolName", "ClientProtocolVersion", });
           return null;
         }
       };
-    com.google.protobuf.Descriptors.FileDescriptor
+    org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor
       .internalBuildGeneratedFileFrom(descriptorData,
-        new com.google.protobuf.Descriptors.FileDescriptor[] {
+        new org.apache.hadoop.thirdparty.protobuf.Descriptors.FileDescriptor[] {
         }, assigner);
   }
 
