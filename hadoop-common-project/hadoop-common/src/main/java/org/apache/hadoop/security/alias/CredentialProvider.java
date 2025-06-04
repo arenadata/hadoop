@@ -47,7 +47,7 @@ public abstract class CredentialProvider {
     private final String alias;
     private final char[] credential;
 
-    protected CredentialEntry(String alias,
+    public CredentialEntry(String alias,
                          char[] credential) {
       this.alias = alias;
       this.credential = credential;
