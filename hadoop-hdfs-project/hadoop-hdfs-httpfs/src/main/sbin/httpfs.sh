@@ -54,8 +54,8 @@ case $1 in
 esac
 
 # Locate bin
-if [[ -n "${HADOOP_HOME}" ]]; then
-  bin="${HADOOP_HOME}/bin"
+if [[ -n "${HADOOP_HDFS_HOME}" ]]; then
+  bin="${HADOOP_HDFS_HOME}/bin"
 else
   sbin=$(cd -P -- "$(dirname -- "$0")" >/dev/null && pwd -P)
   bin=$(cd -P -- "${sbin}/../bin" >/dev/null && pwd -P)
