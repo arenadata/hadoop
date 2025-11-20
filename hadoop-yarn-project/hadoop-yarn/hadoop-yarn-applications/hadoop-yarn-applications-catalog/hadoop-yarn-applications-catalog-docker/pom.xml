@@ -23,7 +23,7 @@
   <parent>
     <artifactId>hadoop-yarn-applications-catalog</artifactId>
     <groupId>org.apache.hadoop</groupId>
-    <version>3.3.6</version>
+    <version>3.3.6.2-4.2.0-0-dev1</version>
   </parent>
 
   <name>Apache Hadoop YARN Application Catalog Docker Image</name>

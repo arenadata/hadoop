@@ -17,12 +17,12 @@
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
-    <version>3.3.6</version>
+    <version>3.3.6.2-4.2.0-0-dev1</version>
     <relativePath>../../hadoop-project</relativePath>
   </parent>
   <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-fs2img</artifactId>
-  <version>3.3.6</version>
+  <version>3.3.6.2-4.2.0-0-dev1</version>
   <description>Apache Hadoop Image Generation Tool</description>
   <name>Apache Hadoop Image Generation Tool</name>
   <packaging>jar</packaging>
