@@ -57,7 +57,7 @@ https://maven.apache.org/xsd/maven-4.0.0.xsd">
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.apache.zookeeper</groupId>
+      <groupId>io.arenadata.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
       <type>test-jar</type>
       <scope>test</scope>
@@ -211,7 +211,7 @@ https://maven.apache.org/xsd/maven-4.0.0.xsd">
       <artifactId>jackson-databind</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.apache.curator</groupId>
+      <groupId>io.arenadata.curator</groupId>
       <artifactId>curator-test</artifactId>
       <scope>test</scope>
     </dependency>

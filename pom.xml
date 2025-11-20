@@ -182,7 +182,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/x
                     <includeTestCode>true</includeTestCode>
                     <reason>Use hadoop-thirdparty shaded instead of curator shaded</reason>
                     <bannedImports>
-                      <bannedImport>org.apache.curator.shaded.**</bannedImport>
+                      <bannedImport>io.arenadata.curator.shaded.**</bannedImport>
                     </bannedImports>
                   </restrictImports>
                   <restrictImports implementation="de.skuzzle.enforcer.restrictimports.rule.RestrictImports">

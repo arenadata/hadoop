@@ -55,17 +55,17 @@
     </dependency>
 
     <dependency>
-      <groupId>org.apache.curator</groupId>
+      <groupId>io.arenadata.curator</groupId>
       <artifactId>curator-framework</artifactId>
     </dependency>
 
     <dependency>
-      <groupId>org.apache.curator</groupId>
+      <groupId>io.arenadata.curator</groupId>
       <artifactId>curator-client</artifactId>
     </dependency>
 
       <dependency>
-          <groupId>org.apache.curator</groupId>
+          <groupId>io.arenadata.curator</groupId>
           <artifactId>curator-test</artifactId>
           <scope>test</scope>
       </dependency>
@@ -81,7 +81,7 @@
     </dependency>
 
     <dependency>
-      <groupId>org.apache.zookeeper</groupId>
+      <groupId>io.arenadata.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
     </dependency>
 

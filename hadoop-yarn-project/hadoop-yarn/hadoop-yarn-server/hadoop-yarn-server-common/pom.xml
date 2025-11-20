@@ -107,7 +107,7 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.apache.zookeeper</groupId>
+      <groupId>io.arenadata.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
     </dependency>
     <dependency>
@@ -153,7 +153,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>org.apache.curator</groupId>
+      <groupId>io.arenadata.curator</groupId>
       <artifactId>curator-test</artifactId>
       <scope>test</scope>
     </dependency>

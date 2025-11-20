@@ -84,7 +84,7 @@
     </dependency>
     <!-- 'mvn dependency:analyze' fails to detect use of this dependency -->
     <dependency>
-      <groupId>org.apache.zookeeper</groupId>
+      <groupId>io.arenadata.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
       <type>test-jar</type>
       <scope>test</scope>

@@ -104,6 +104,9 @@
                 </banTransitiveDependencies>
                 <banDuplicateClasses>
                   <findAllDuplicates>true</findAllDuplicates>
+                    <ignoreClasses>
+                        <ignoreClass>META-INF.versions.11.module-info</ignoreClass>
+                    </ignoreClasses>
                   <dependencies>
                     <dependency>
                       <groupId>org.apache.hadoop</groupId>

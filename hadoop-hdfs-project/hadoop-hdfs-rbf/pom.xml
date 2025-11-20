@@ -109,7 +109,7 @@ https://maven.apache.org/xsd/maven-4.0.0.xsd">
       <type>test-jar</type>
     </dependency>
     <dependency>
-      <groupId>org.apache.curator</groupId>
+      <groupId>io.arenadata.curator</groupId>
       <artifactId>curator-test</artifactId>
       <scope>test</scope>
     </dependency>

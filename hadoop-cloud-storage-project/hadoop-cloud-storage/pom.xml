@@ -98,7 +98,7 @@
           <artifactId>jsch</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>org.apache.zookeeper</groupId>
+          <groupId>io.arenadata.zookeeper</groupId>
           <artifactId>zookeeper</artifactId>
         </exclusion>
       </exclusions>

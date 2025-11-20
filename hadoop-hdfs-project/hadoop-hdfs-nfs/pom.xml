@@ -78,7 +78,7 @@ https://maven.apache.org/xsd/maven-4.0.0.xsd">
       <type>test-jar</type>
     </dependency>
     <dependency>
-      <groupId>org.apache.zookeeper</groupId>
+      <groupId>io.arenadata.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
       <type>test-jar</type>
       <scope>test</scope>

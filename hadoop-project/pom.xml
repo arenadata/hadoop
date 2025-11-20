@@ -105,8 +105,8 @@
     <hadoop-thirdparty-shaded-protobuf-prefix>${hadoop-thirdparty-shaded-prefix}.protobuf</hadoop-thirdparty-shaded-protobuf-prefix>
     <hadoop-thirdparty-shaded-guava-prefix>${hadoop-thirdparty-shaded-prefix}.com.google.common</hadoop-thirdparty-shaded-guava-prefix>
 
-    <zookeeper.version>3.8.4</zookeeper.version>
-    <curator.version>5.4.0</curator.version>
+    <zookeeper.version>3.9.4.1-4.2.0-0-dev1</zookeeper.version>
+    <curator.version>5.9.0.1-4.2.0-0-dev1</curator.version>
     <findbugs.version>3.0.5</findbugs.version>
     <dnsjava.version>2.1.7</dnsjava.version>
 
@@ -1360,7 +1360,7 @@
       </dependency>
 
       <dependency>
-        <groupId>org.apache.zookeeper</groupId>
+        <groupId>io.arenadata.zookeeper</groupId>
         <artifactId>zookeeper</artifactId>
         <version>${zookeeper.version}</version>
         <exclusions>
@@ -1444,7 +1444,7 @@
         </exclusions>
       </dependency>
       <dependency>
-        <groupId>org.apache.zookeeper</groupId>
+        <groupId>io.arenadata.zookeeper</groupId>
         <artifactId>zookeeper</artifactId>
         <version>${zookeeper.version}</version>
         <type>test-jar</type>
@@ -1617,12 +1617,12 @@
       </dependency>
 
      <dependency>
-       <groupId>org.apache.curator</groupId>
+       <groupId>io.arenadata.curator</groupId>
        <artifactId>curator-recipes</artifactId>
        <version>${curator.version}</version>
        <exclusions>
          <exclusion>
-           <groupId>org.apache.zookeeper</groupId>
+           <groupId>io.arenadata.zookeeper</groupId>
            <artifactId>zookeeper</artifactId>
          </exclusion>
          <exclusion>
@@ -1640,12 +1640,12 @@
        </exclusions>
      </dependency>
      <dependency>
-       <groupId>org.apache.curator</groupId>
+       <groupId>io.arenadata.curator</groupId>
        <artifactId>curator-client</artifactId>
        <version>${curator.version}</version>
        <exclusions>
          <exclusion>
-           <groupId>org.apache.zookeeper</groupId>
+           <groupId>io.arenadata.zookeeper</groupId>
            <artifactId>zookeeper</artifactId>
          </exclusion>
          <exclusion>
@@ -1659,12 +1659,12 @@
        </exclusions>
      </dependency>
      <dependency>
-       <groupId>org.apache.curator</groupId>
+       <groupId>io.arenadata.curator</groupId>
        <artifactId>curator-framework</artifactId>
        <version>${curator.version}</version>
        <exclusions>
          <exclusion>
-           <groupId>org.apache.zookeeper</groupId>
+           <groupId>io.arenadata.zookeeper</groupId>
            <artifactId>zookeeper</artifactId>
          </exclusion>
          <exclusion>
@@ -1688,12 +1688,12 @@
         <version>${jmh.version}</version>
       </dependency>
      <dependency>
-       <groupId>org.apache.curator</groupId>
+       <groupId>io.arenadata.curator</groupId>
        <artifactId>curator-test</artifactId>
        <version>${curator.version}</version>
        <exclusions>
          <exclusion>
-           <groupId>org.apache.zookeeper</groupId>
+           <groupId>io.arenadata.zookeeper</groupId>
            <artifactId>zookeeper</artifactId>
          </exclusion>
          <exclusion>

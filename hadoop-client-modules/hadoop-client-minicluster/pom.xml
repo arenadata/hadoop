@@ -137,7 +137,7 @@
           <artifactId>avro</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>org.apache.curator</groupId>
+          <groupId>io.arenadata.curator</groupId>
           <artifactId>curator-client</artifactId>
         </exclusion>
         <exclusion>
@@ -317,11 +317,11 @@
           <artifactId>kerb-admin</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>org.apache.curator</groupId>
+          <groupId>io.arenadata.curator</groupId>
           <artifactId>curator-framework</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>org.apache.curator</groupId>
+          <groupId>io.arenadata.curator</groupId>
           <artifactId>curator-recipes</artifactId>
         </exclusion>
         <exclusion>
