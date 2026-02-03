@@ -27,6 +27,9 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.Comparator;
 
 import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
@@ -91,6 +94,9 @@ public class MemoryFederationStateStore implements FederationStateStore {
   private Map<ApplicationId, SubClusterId> applications;
   private Map<String, SubClusterPolicyConfiguration> policies;
   private RouterRMDTSecretManagerState routerRMSecretManagerState;
+  private int maxAppsInStateStore;
+  private AtomicInteger sequenceNum;
+  private AtomicInteger masterKeyId;
 
   private final MonotonicClock clock = new MonotonicClock();
 
@@ -103,6 +109,9 @@ public class MemoryFederationStateStore implements FederationStateStore {
     applications = new ConcurrentHashMap<ApplicationId, SubClusterId>();
     policies = new ConcurrentHashMap<String, SubClusterPolicyConfiguration>();
     routerRMSecretManagerState = new RouterRMDTSecretManagerState();
+    maxAppsInStateStore = 1000;  // hardcoded default since config key not in 3.3.6
+    sequenceNum = new AtomicInteger();
+    masterKeyId = new AtomicInteger();
   }
 
   @Override
@@ -429,6 +438,31 @@ public class MemoryFederationStateStore implements FederationStateStore {
     RouterStoreToken resultToken =
         RouterStoreToken.newInstance(tokenIdentifier, rmDTState.get(tokenIdentifier));
     return RouterRMTokenResponse.newInstance(resultToken);
+  }
+
+  @Override
+  public int incrementDelegationTokenSeqNum() {
+    return sequenceNum.incrementAndGet();
+  }
+
+  @Override
+  public int getDelegationTokenSeqNum() {
+    return sequenceNum.get();
+  }
+
+  @Override
+  public void setDelegationTokenSeqNum(int seqNum) {
+    sequenceNum.set(seqNum);
+  }
+
+  @Override
+  public int getCurrentKeyId() {
+    return masterKeyId.get();
+  }
+
+  @Override
+  public int incrementCurrentKeyId() {
+    return masterKeyId.incrementAndGet();
   }
 
   private void storeOrUpdateRouterRMDT(RMDelegationTokenIdentifier rmDTIdentifier,
