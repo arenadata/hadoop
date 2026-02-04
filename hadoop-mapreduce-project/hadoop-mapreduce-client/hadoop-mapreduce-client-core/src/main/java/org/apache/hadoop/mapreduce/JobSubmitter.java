@@ -417,12 +417,12 @@ class JobSubmitter {
   }
 
   //get secret keys and tokens and store them into TokenCache
-  private void populateTokenCache(Configuration conf, Credentials credentials) 
+  private void populateTokenCache(Configuration conf, Credentials credentials)
   throws IOException{
     readTokensFromFiles(conf, credentials);
     // add the delegation tokens from configuration
     String [] nameNodes = conf.getStrings(MRJobConfig.JOB_NAMENODES);
-    LOG.debug("adding the following namenodes' delegation tokens:" + 
+    LOG.debug("adding the following namenodes' delegation tokens:" +
         Arrays.toString(nameNodes));
     if(nameNodes != null) {
       Path [] ps = new Path[nameNodes.length];
@@ -430,6 +430,24 @@ class JobSubmitter {
         ps[i] = new Path(nameNodes[i]);
       }
       TokenCache.obtainTokensForNamenodes(credentials, ps, conf);
+    }
+    // YARN-10311: add delegation tokens for all configured nameservices
+    // This enables jobs to work in federated environments where containers
+    // may run on different subclusters
+    String[] nameServices = conf.getStrings("dfs.nameservices");
+    if (nameServices != null && nameServices.length > 0) {
+      LOG.debug("adding delegation tokens for nameservices: "
+          + Arrays.toString(nameServices));
+      for (String nameService : nameServices) {
+        Path nsPath = new Path("hdfs://" + nameService + "/");
+        try {
+          TokenCache.obtainTokensForNamenodes(credentials,
+              new Path[] { nsPath }, conf);
+        } catch (IOException e) {
+          LOG.warn("Failed to get delegation token for nameservice "
+              + nameService + ": " + e.getMessage());
+        }
+      }
     }
   }
 
