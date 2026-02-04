@@ -1621,8 +1621,12 @@ public class RouterClientProtocol implements ClientProtocol {
 
   @Override
   public DataEncryptionKey getDataEncryptionKey() throws IOException {
-    rpcServer.checkOperation(NameNode.OperationCategory.READ, false);
-    return null;
+    rpcServer.checkOperation(NameNode.OperationCategory.READ);
+    RemoteMethod method = new RemoteMethod("getDataEncryptionKey");
+    String ns = subclusterResolver.getDefaultNamespace();
+
+    return (DataEncryptionKey) rpcClient.invokeSingle(ns, method);
+
   }
 
   @Override
