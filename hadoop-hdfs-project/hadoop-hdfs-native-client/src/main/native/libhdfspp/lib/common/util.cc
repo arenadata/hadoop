@@ -56,7 +56,7 @@ std::string SerializeDelimitedProtobufMessage(const ::google::protobuf::MessageL
 
   std::string buf;
 
-  int size = msg->ByteSize();
+  size_t size = msg->ByteSizeLong();
   buf.reserve(pbio::CodedOutputStream::VarintSize32(size) + size);
   pbio::StringOutputStream ss(&buf);
   pbio::CodedOutputStream os(&ss);
@@ -69,13 +69,13 @@ std::string SerializeDelimitedProtobufMessage(const ::google::protobuf::MessageL
 }
 
 int DelimitedPBMessageSize(const ::google::protobuf::MessageLite *msg) {
-  size_t size = msg->ByteSize();
+  size_t size = msg->ByteSizeLong();
   return ::google::protobuf::io::CodedOutputStream::VarintSize32(size) + size;
 }
 
 std::string GetRandomClientName() {
   std::vector<unsigned char>buf(8);
-  RAND_pseudo_bytes(&buf[0], 8);
+  RAND_bytes(&buf[0], 8);
 
   std::ostringstream oss;
   oss << "DFSClient_"  << getpid() <<  "_" <<
