@@ -1338,7 +1338,16 @@ public class ResourceLocalizationService extends CompositeService
           Credentials systemCredentials =
               getSystemCredentialsSentFromRM(context);
           if (systemCredentials != null) {
-            credentials = systemCredentials;
+            // Merge system credentials with container credentials instead of
+            // replacing them. This ensures HDFS delegation tokens from job
+            // submission are preserved while still adding system tokens from RM.
+            if (credentials != null) {
+              Credentials mergedCredentials = new Credentials(credentials);
+              mergedCredentials.addAll(systemCredentials);
+              credentials = mergedCredentials;
+            } else {
+              credentials = systemCredentials;
+            }
           }
         }
 
