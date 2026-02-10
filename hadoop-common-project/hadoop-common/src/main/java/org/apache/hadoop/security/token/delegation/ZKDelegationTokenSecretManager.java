@@ -306,6 +306,10 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
           .build();
       CuratorCacheListener keyCacheListener = CuratorCacheListener.builder()
           .forCreatesAndChanges((oldNode, node) -> {
+            // Skip root node - it doesn't contain key data
+            if (!node.getPath().contains("/" + DELEGATION_KEY_PREFIX)) {
+              return;
+            }
             try {
               processKeyAddOrUpdate(node.getData());
             } catch (IOException e) {
@@ -330,6 +334,10 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
             .build();
         CuratorCacheListener tokenCacheListener = CuratorCacheListener.builder()
             .forCreatesAndChanges((oldNode, node) -> {
+              // Skip root node - it doesn't contain token data
+              if (!node.getPath().contains("/" + DELEGATION_TOKEN_PREFIX)) {
+                return;
+              }
               try {
                 processTokenAddOrUpdate(node.getData());
               } catch (IOException e) {
@@ -376,7 +384,12 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
     }
 
     final AtomicInteger count = new AtomicInteger(0);
+    final String prefix = isTokenCache ? DELEGATION_TOKEN_PREFIX : DELEGATION_KEY_PREFIX;
     children.forEach(childData -> {
+      // Skip root node - it doesn't contain token/key data
+      if (!childData.getPath().contains("/" + prefix)) {
+        return;
+      }
       try {
         if (isTokenCache) {
           processTokenAddOrUpdate(childData.getData());

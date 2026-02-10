@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.federation;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -60,6 +61,10 @@ import org.apache.hadoop.yarn.server.federation.store.records.SubClusterRegister
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterState;
 import org.apache.hadoop.yarn.server.federation.store.records.UpdateApplicationHomeSubClusterRequest;
 import org.apache.hadoop.yarn.server.federation.store.records.UpdateApplicationHomeSubClusterResponse;
+import org.apache.hadoop.yarn.server.federation.store.records.RouterMasterKeyRequest;
+import org.apache.hadoop.yarn.server.federation.store.records.RouterMasterKeyResponse;
+import org.apache.hadoop.yarn.server.federation.store.records.RouterRMTokenRequest;
+import org.apache.hadoop.yarn.server.federation.store.records.RouterRMTokenResponse;
 import org.apache.hadoop.yarn.server.federation.utils.FederationStateStoreFacade;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
@@ -300,5 +305,72 @@ public class FederationStateStoreService extends AbstractService
   public DeleteApplicationHomeSubClusterResponse deleteApplicationHomeSubCluster(
       DeleteApplicationHomeSubClusterRequest request) throws YarnException {
     return stateStoreClient.deleteApplicationHomeSubCluster(request);
+  }
+
+  @Override
+  public RouterMasterKeyResponse storeNewMasterKey(RouterMasterKeyRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.storeNewMasterKey(request);
+  }
+
+  @Override
+  public RouterMasterKeyResponse removeStoredMasterKey(RouterMasterKeyRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.removeStoredMasterKey(request);
+  }
+
+  @Override
+  public RouterMasterKeyResponse getMasterKeyByDelegationKey(RouterMasterKeyRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.getMasterKeyByDelegationKey(request);
+  }
+
+  @Override
+  public RouterRMTokenResponse storeNewToken(RouterRMTokenRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.storeNewToken(request);
+  }
+
+  @Override
+  public RouterRMTokenResponse updateStoredToken(RouterRMTokenRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.updateStoredToken(request);
+  }
+
+  @Override
+  public RouterRMTokenResponse removeStoredToken(RouterRMTokenRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.removeStoredToken(request);
+  }
+
+  @Override
+  public RouterRMTokenResponse getTokenByRouterStoreToken(RouterRMTokenRequest request)
+      throws YarnException, IOException {
+    return stateStoreClient.getTokenByRouterStoreToken(request);
+  }
+
+  @Override
+  public int incrementDelegationTokenSeqNum() {
+    return stateStoreClient.incrementDelegationTokenSeqNum();
+  }
+
+  @Override
+  public int getDelegationTokenSeqNum() {
+    return stateStoreClient.getDelegationTokenSeqNum();
+  }
+
+  @Override
+  public void setDelegationTokenSeqNum(int seqNum) {
+    stateStoreClient.setDelegationTokenSeqNum(seqNum);
+  }
+
+  @Override
+  public int getCurrentKeyId() {
+    return stateStoreClient.getCurrentKeyId();
+  }
+
+  @Override
+  public int incrementCurrentKeyId() {
+    return stateStoreClient.incrementCurrentKeyId();
   }
 }

@@ -126,6 +126,8 @@ public class StateStoreService extends CompositeService {
     // Caches to maintain
     this.cachesToUpdateInternal = new ArrayList<>();
     this.cachesToUpdateExternal = new ArrayList<>();
+
+    this.cacheLastUpdateTime = 0;
   }
 
   /**

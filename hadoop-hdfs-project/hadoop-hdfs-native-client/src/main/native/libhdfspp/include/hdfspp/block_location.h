@@ -19,6 +19,10 @@
 #ifndef HDFSPP_BLOCK_LOCATION_H
 #define HDFSPP_BLOCK_LOCATION_H
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 namespace hdfs {
 
 class DNInfo {

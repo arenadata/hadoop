@@ -1443,12 +1443,28 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
         throw new IOException(
             "Can't get Master Kerberos principal for the RM to use as renewer");
       }
-      final org.apache.hadoop.security.token.Token<?>[] tokens =
-          fs.getFileSystem().addDelegationTokens(tokenRenewer, allCreds);
-      if (LOG.isDebugEnabled()) {
-        if (tokens != null && tokens.length != 0) {
-          for (Token<?> token : tokens) {
-            LOG.debug("Got DT: {}", token);
+      // YARN-10311: add the delegation tokens from all configured nameservices
+      // This enables services to work in federated environments where containers
+      // may run on different subclusters
+      Configuration conf = getConfig();
+      String[] nameServices = conf.getStrings(DFSConfigKeys.DFS_NAMESERVICES);
+      LOG.debug("adding the following namenodes' delegation tokens: "
+          + Arrays.toString(nameServices));
+      if (nameServices != null) {
+        for (String nameService : nameServices) {
+          Path nsPath = new Path("hdfs://" + nameService + "/");
+          try {
+            FileSystem nsFs = nsPath.getFileSystem(conf);
+            org.apache.hadoop.security.token.Token<?>[] tokens =
+                nsFs.addDelegationTokens(tokenRenewer, allCreds);
+            if (LOG.isDebugEnabled() && tokens != null && tokens.length != 0) {
+              for (Token<?> token : tokens) {
+                LOG.debug("Got DT for {}: {}", nameService, token);
+              }
+            }
+          } catch (IOException e) {
+            LOG.warn("Failed to get delegation token for nameservice "
+                + nameService + ": " + e.getMessage());
           }
         }
       }

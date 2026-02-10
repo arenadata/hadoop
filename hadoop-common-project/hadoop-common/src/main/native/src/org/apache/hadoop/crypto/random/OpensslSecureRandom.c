@@ -198,6 +198,7 @@ JNIEXPORT jboolean JNICALL Java_org_apache_hadoop_crypto_random_OpensslSecureRan
  * Example: crypto/threads/mttest.c
  */
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 #ifdef WINDOWS
 static void windows_locking_callback(int mode, int type, char *file, int line);
 static HANDLE *lock_cs;
@@ -301,6 +302,7 @@ static unsigned long pthreads_thread_id(void)
 }
 
 #endif /* UNIX */
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 
 /**
  * If using an Intel chipset with RDRAND, the high-performance hardware

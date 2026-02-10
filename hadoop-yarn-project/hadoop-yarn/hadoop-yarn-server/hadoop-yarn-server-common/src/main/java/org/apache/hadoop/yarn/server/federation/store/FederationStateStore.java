@@ -30,7 +30,8 @@ import org.apache.hadoop.yarn.server.records.Version;
  */
 public interface FederationStateStore
     extends FederationApplicationHomeSubClusterStore,
-    FederationMembershipStateStore, FederationPolicyStore {
+    FederationMembershipStateStore, FederationPolicyStore,
+    FederationDelegationTokenStateStore {
 
   /**
    * Initialize the FederationStore.

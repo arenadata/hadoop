@@ -101,23 +101,29 @@ public final class RouterWebServiceUtil {
       final String targetPath, final Object formParam,
       final Map<String, String[]> additionalParam, Configuration conf) {
 
-    UserGroupInformation callerUGI = null;
-
-    if (hsr != null) {
-      callerUGI = RMWebAppUtil.getCallerUserGroupInformation(hsr, true);
-    } else {
-      // user not required
-      callerUGI = UserGroupInformation.createRemoteUser(user);
-
+    UserGroupInformation loginUser = null;
+    String realUserName = null;
+    try {
+      loginUser = UserGroupInformation.getLoginUser();
+      if (hsr != null) {
+        UserGroupInformation realUGI =
+            RMWebAppUtil.getCallerUserGroupInformation(hsr, true);
+        if (realUGI != null) {
+          realUserName = realUGI.getShortUserName();
+        }
+      }
+    } catch (IOException e) {
+      LOG.error("Unable to get login user for internal call", e);
     }
 
-    if (callerUGI == null) {
-      LOG.error("Unable to obtain user name, user not authenticated");
+    if (loginUser == null) {
+      LOG.error("Unable to obtain login user, not authenticated");
       return null;
     }
 
+    final String doAsUser = realUserName;
     try {
-      return callerUGI.doAs(new PrivilegedExceptionAction<T>() {
+      return loginUser.doAs(new PrivilegedExceptionAction<T>() {
         @SuppressWarnings("unchecked")
         @Override
         public T run() {
@@ -126,9 +132,15 @@ public final class RouterWebServiceUtil {
 
           // We can have hsr or additionalParam. There are no case with both.
           if (hsr != null) {
-            paramMap = hsr.getParameterMap();
+            paramMap = new HashMap<>(hsr.getParameterMap());
           } else if (additionalParam != null) {
-            paramMap = additionalParam;
+            paramMap = new HashMap<>(additionalParam);
+          } else {
+            paramMap = new HashMap<>();
+          }
+
+          if (doAsUser != null && !doAsUser.isEmpty()) {
+            paramMap.put("doAs", new String[]{doAsUser});
           }
 
           ClientResponse response = RouterWebServiceUtil.invokeRMWebService(
