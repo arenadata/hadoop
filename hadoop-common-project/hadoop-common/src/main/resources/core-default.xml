@@ -356,6 +356,160 @@
   </description>
 </property>
 
+<!-- Vault/OpenBao Credential Provider properties -->
+<property>
+  <name>hadoop.security.credential.vault.auth.method</name>
+  <value>token</value>
+  <description>
+    Authentication method for Vault credential provider.
+    Supported values: token, kerberos.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.token</name>
+  <value></value>
+  <description>
+    Vault authentication token. If not set, falls back to systemd
+    credentials ($CREDENTIALS_DIRECTORY/vault-token), then to the
+    VAULT_TOKEN environment variable.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.systemd.credential.name</name>
+  <value>vault-token</value>
+  <description>
+    Name of the systemd credential file containing the Vault token.
+    The file is read from the $CREDENTIALS_DIRECTORY directory
+    set by systemd when using LoadCredential= or SetCredential=.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.ssl.truststore.location</name>
+  <value></value>
+  <description>
+    Path to the SSL truststore for HTTPS connections to Vault.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.ssl.truststore.password</name>
+  <value></value>
+  <description>
+    Password for the Vault SSL truststore.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.connection.timeout.ms</name>
+  <value>30000</value>
+  <description>
+    Connection timeout in milliseconds for Vault HTTP requests.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.read.timeout.ms</name>
+  <value>30000</value>
+  <description>
+    Read timeout in milliseconds for Vault HTTP requests.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.retry.count</name>
+  <value>3</value>
+  <description>
+    Number of retry attempts for failed Vault HTTP requests.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.retry.interval.ms</name>
+  <value>1000</value>
+  <description>
+    Interval in milliseconds between retry attempts for Vault requests.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.kerberos.principal</name>
+  <value></value>
+  <description>
+    Kerberos principal for Vault authentication. Required when
+    hadoop.security.credential.vault.auth.method is set to kerberos.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.kerberos.keytab</name>
+  <value></value>
+  <description>
+    Path to the Kerberos keytab for Vault authentication. Required when
+    hadoop.security.credential.vault.auth.method is set to kerberos.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.kerberos.login.path</name>
+  <value>auth/kerberos</value>
+  <description>
+    Vault auth mount path for Kerberos authentication.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.kerberos.service.principal</name>
+  <value></value>
+  <description>
+    Kerberos service principal for SPNEGO authentication to Vault.
+    If not set, defaults to HTTP@{vault-host}.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.kerberos.ugi.mode</name>
+  <value>dedicated</value>
+  <description>
+    UGI mode for Kerberos authentication to Vault.
+    "dedicated" creates a separate UGI from vault-specific principal/keytab.
+    "current" uses the process's existing login UGI (e.g. NameNode's own
+    Kerberos identity), so no separate principal/keytab is needed.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.cache.enabled</name>
+  <value>true</value>
+  <description>
+    Enable in-JVM caching of credential values read from Vault.
+    When enabled, repeated getPassword() calls return cached values
+    instead of making HTTP requests to Vault.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.cache.ttl.ms</name>
+  <value>600000</value>
+  <description>
+    Time-to-live in milliseconds for cached credential values.
+    After this period, the next read will fetch a fresh value from Vault.
+    Default is 600000 (10 minutes).
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.client.cache.max.size</name>
+  <value>16</value>
+  <description>
+    Maximum number of VaultHttpClient instances cached per JVM.
+    Each unique Vault base URL gets its own client. In most deployments
+    this is 1-2.
+  </description>
+</property>
+
 <property>
   <name>hadoop.security.group.mapping.ldap.ssl.truststore</name>
   <value></value>
