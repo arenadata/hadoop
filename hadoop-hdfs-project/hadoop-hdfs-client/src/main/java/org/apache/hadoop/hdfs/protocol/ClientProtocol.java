@@ -1312,6 +1312,23 @@ public interface ClientProtocol {
   DataEncryptionKey getDataEncryptionKey() throws IOException;
 
   /**
+   * Get encryption key for a specific block pool. In federated setups with
+   * Router, different block pools belong to different namespaces and require
+   * namespace-specific encryption keys.
+   *
+   * @param blockPoolId the block pool to get the encryption key for,
+   *                    or null to use the default namespace
+   * @return encryption key for the specified block pool
+   * @throws IOException
+   */
+  @Idempotent
+  @ReadOnly(isCoordinated = true)
+  default DataEncryptionKey getDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    return getDataEncryptionKey();
+  }
+
+  /**
    * Create a snapshot.
    * @param snapshotRoot the path that is being snapshotted
    * @param snapshotName name of the snapshot created

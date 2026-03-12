@@ -35,4 +35,18 @@ public interface DataEncryptionKeyFactory {
    * @throws IOException for any error
    */
   DataEncryptionKey newDataEncryptionKey() throws IOException;
+
+  /**
+   * Creates a new DataEncryptionKey for a specific block pool.
+   * In federated setups with Router, different block pools belong to different
+   * namespaces and require different encryption keys.
+   *
+   * @param blockPoolId the block pool identifier to get the key for
+   * @return DataEncryptionKey for the specified block pool
+   * @throws IOException for any error
+   */
+  default DataEncryptionKey newDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    return newDataEncryptionKey();
+  }
 }

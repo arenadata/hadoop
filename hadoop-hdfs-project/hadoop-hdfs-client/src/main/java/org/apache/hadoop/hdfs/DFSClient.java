@@ -237,6 +237,8 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
   private final Random r = new Random();
   private SocketAddress[] localInterfaceAddrs;
   private DataEncryptionKey encryptionKey;
+  private final ConcurrentHashMap<String, DataEncryptionKey>
+      encryptionKeysByBlockPool = new ConcurrentHashMap<>();
   final SaslDataTransferClient saslClient;
   private final CachingStrategy defaultReadCachingStrategy;
   private final CachingStrategy defaultWriteCachingStrategy;
@@ -1839,6 +1841,7 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     synchronized (this) {
       encryptionKey = null;
     }
+    encryptionKeysByBlockPool.clear();
   }
 
   /**
@@ -1865,6 +1868,31 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     } else {
       return null;
     }
+  }
+
+  @Override
+  public DataEncryptionKey newDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    if (blockPoolId == null || blockPoolId.isEmpty()) {
+      return newDataEncryptionKey();
+    }
+    if (!shouldEncryptData()) {
+      return null;
+    }
+    DataEncryptionKey key = encryptionKeysByBlockPool.get(blockPoolId);
+    if (key != null && key.expiryDate >= Time.now()) {
+      return key;
+    }
+    LOG.debug("Getting new encryption token from NN for block pool {}",
+        blockPoolId);
+    key = namenode.getDataEncryptionKey(blockPoolId);
+    if (key != null) {
+      encryptionKeysByBlockPool.put(blockPoolId, key);
+      synchronized (this) {
+        encryptionKey = key;
+      }
+    }
+    return key;
   }
 
   @VisibleForTesting

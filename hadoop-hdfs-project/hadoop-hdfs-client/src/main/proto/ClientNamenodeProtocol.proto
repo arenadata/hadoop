@@ -774,7 +774,8 @@ message SetBalancerBandwidthRequestProto {
 message SetBalancerBandwidthResponseProto { // void response
 }
 
-message GetDataEncryptionKeyRequestProto { // no parameters
+message GetDataEncryptionKeyRequestProto {
+  optional string blockPoolId = 1;
 }
 
 message GetDataEncryptionKeyResponseProto {
