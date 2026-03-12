@@ -982,6 +982,22 @@ public class ClientNamenodeProtocolTranslatorPB implements
         PBHelperClient.convert(rsp.getDataEncryptionKey()) : null;
   }
 
+  @Override
+  public DataEncryptionKey getDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    if (blockPoolId == null || blockPoolId.isEmpty()) {
+      return getDataEncryptionKey();
+    }
+    GetDataEncryptionKeyRequestProto req =
+        GetDataEncryptionKeyRequestProto.newBuilder()
+            .setBlockPoolId(blockPoolId)
+            .build();
+    GetDataEncryptionKeyResponseProto rsp =
+        ipc(() -> rpcProxy.getDataEncryptionKey(null, req));
+    return rsp.hasDataEncryptionKey() ?
+        PBHelperClient.convert(rsp.getDataEncryptionKey()) : null;
+  }
+
 
   @Override
   public boolean isFileClosed(String src) throws IOException {

@@ -1943,6 +1943,13 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   }
 
   @Override
+  public DataEncryptionKey getDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    // Regular NameNode has only one block pool, ignore the parameter.
+    return getDataEncryptionKey();
+  }
+
+  @Override
   public String createSnapshot(String snapshotRoot, String snapshotName)
       throws IOException {
     checkNNStartup();
