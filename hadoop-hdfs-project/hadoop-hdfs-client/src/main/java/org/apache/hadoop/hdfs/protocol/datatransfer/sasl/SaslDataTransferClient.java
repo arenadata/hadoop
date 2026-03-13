@@ -148,7 +148,7 @@ public class SaslDataTransferClient {
       throws IOException {
     // The encryption key factory only returns a key if encryption is enabled.
     DataEncryptionKey encryptionKey = !trustedChannelResolver.isTrusted() ?
-        encryptionKeyFactory.newDataEncryptionKey() : null;
+        getEncryptionKeyForToken(encryptionKeyFactory, accessToken) : null;
     IOStreamPair ios = send(socket.getInetAddress(), underlyingOut,
         underlyingIn, encryptionKey, accessToken, datanodeId, null);
     return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
@@ -232,7 +232,7 @@ public class SaslDataTransferClient {
     if (!localTrusted || !remoteTrusted) {
       // The encryption key factory only returns a key if encryption is enabled.
       DataEncryptionKey encryptionKey =
-          encryptionKeyFactory.newDataEncryptionKey();
+          getEncryptionKeyForToken(encryptionKeyFactory, accessToken);
       return send(addr, underlyingOut, underlyingIn, encryptionKey, accessToken,
           datanodeId, secretKey);
     } else {
@@ -398,6 +398,42 @@ public class SaslDataTransferClient {
         rc.setText(rc.getDefaultText());
       }
     }
+  }
+
+  /**
+   * Gets the encryption key appropriate for the given access token.
+   * Extracts the block pool ID from the token and requests a key for that
+   * specific block pool. This is critical for Router-based federation where
+   * different block pools require different encryption keys.
+   */
+  private static DataEncryptionKey getEncryptionKeyForToken(
+      DataEncryptionKeyFactory encryptionKeyFactory,
+      Token<BlockTokenIdentifier> accessToken) throws IOException {
+    String blockPoolId = getBlockPoolIdFromToken(accessToken);
+    if (blockPoolId != null) {
+      return encryptionKeyFactory.newDataEncryptionKey(blockPoolId);
+    }
+    return encryptionKeyFactory.newDataEncryptionKey();
+  }
+
+  /**
+   * Extracts the block pool ID from a block access token.
+   * Returns null if the token cannot be decoded.
+   */
+  private static String getBlockPoolIdFromToken(
+      Token<BlockTokenIdentifier> accessToken) {
+    if (accessToken == null) {
+      return null;
+    }
+    try {
+      BlockTokenIdentifier identifier = accessToken.decodeIdentifier();
+      if (identifier != null) {
+        return identifier.getBlockPoolId();
+      }
+    } catch (IOException e) {
+      LOG.debug("Failed to decode block token identifier for block pool ID", e);
+    }
+    return null;
   }
 
   @VisibleForTesting

@@ -1252,6 +1252,12 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol,
   }
 
   @Override // ClientProtocol
+  public DataEncryptionKey getDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    return clientProto.getDataEncryptionKey(blockPoolId);
+  }
+
+  @Override // ClientProtocol
   public String createSnapshot(String snapshotRoot, String snapshotName)
       throws IOException {
     return clientProto.createSnapshot(snapshotRoot, snapshotName);
