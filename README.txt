@@ -1,4 +1,4 @@
-# Arenadata Hadoop 2.0
+## Arenadata Hadoop 2.0
 
 For the latest information about Hadoop, please visit our website at:
 
