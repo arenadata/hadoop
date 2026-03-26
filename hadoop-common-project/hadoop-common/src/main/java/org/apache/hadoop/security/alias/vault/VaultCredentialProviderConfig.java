@@ -91,6 +91,16 @@ public final class VaultCredentialProviderConfig {
   public static final String KERBEROS_UGI_MODE_DEFAULT = "dedicated";
   public static final String KERBEROS_UGI_MODE_CURRENT = "current";
 
+  public static final String SSL_PREFIX = CONFIG_PREFIX + "ssl.";
+
+  public static final String SSL_TRUSTSTORE_LOCATION_KEY =
+      SSL_PREFIX + "truststore.location";
+  public static final String SSL_TRUSTSTORE_PASSWORD_KEY =
+      SSL_PREFIX + "truststore.password";
+  public static final String SSL_TRUSTSTORE_TYPE_KEY =
+      SSL_PREFIX + "truststore.type";
+  public static final String SSL_TRUSTSTORE_TYPE_DEFAULT = "JKS";
+
   public static final String CACHE_ENABLED_KEY =
       CONFIG_PREFIX + "cache.enabled";
   public static final boolean CACHE_ENABLED_DEFAULT = true;

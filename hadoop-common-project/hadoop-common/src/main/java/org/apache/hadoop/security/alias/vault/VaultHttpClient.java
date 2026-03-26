@@ -19,6 +19,7 @@
 package org.apache.hadoop.security.alias.vault;
 
 import java.io.Closeable;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -28,6 +29,7 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -35,7 +37,9 @@ import java.util.List;
 import java.util.Map;
 
 import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
@@ -98,12 +102,7 @@ public class VaultHttpClient implements Closeable {
 
     if ("https".equalsIgnoreCase(connInfo.getProtocol())) {
       this.sslFactory = createSslFactory(conf);
-      try {
-        this.sslSocketFactory = sslFactory.createSSLSocketFactory();
-      } catch (GeneralSecurityException ex) {
-        throw new IOException(
-            "Failed to create SSLSocketFactory for Vault", ex);
-      }
+      this.sslSocketFactory = createSslSocketFactory(conf, sslFactory);
     } else {
       this.sslFactory = null;
       this.sslSocketFactory = null;
@@ -128,13 +127,62 @@ public class VaultHttpClient implements Closeable {
 
   private static SSLFactory createSslFactory(Configuration conf)
       throws IOException {
+    if (conf.get(VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY)
+        != null) {
+      return null;
+    }
     SSLFactory factory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     try {
       factory.init();
-    } catch (GeneralSecurityException ex) {
-      throw new IOException("Failed to initialize SSL for Vault", ex);
+      LOG.debug("Using Hadoop SSLFactory for Vault connection");
+      return factory;
+    } catch (GeneralSecurityException e) {
+      factory.destroy();
+      throw new IOException("Failed to initialize SSL for Vault", e);
     }
-    return factory;
+  }
+
+  private static SSLSocketFactory createSslSocketFactory(
+      Configuration conf, SSLFactory factory) throws IOException {
+    if (factory != null) {
+      try {
+        return factory.createSSLSocketFactory();
+      } catch (GeneralSecurityException e) {
+        factory.destroy();
+        throw new IOException(
+            "Failed to create SSLSocketFactory for Vault", e);
+      }
+    }
+    LOG.debug("Using dedicated vault SSL configuration");
+    try {
+      return buildSslContext(conf).getSocketFactory();
+    } catch (GeneralSecurityException e) {
+      throw new IOException(
+          "Failed to build SSLContext from vault.ssl.* config", e);
+    }
+  }
+
+  private static SSLContext buildSslContext(Configuration conf)
+      throws IOException, GeneralSecurityException {
+    String truststoreLocation = conf.get(
+        VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY);
+    String truststorePassword = conf.get(
+        VaultCredentialProviderConfig.SSL_TRUSTSTORE_PASSWORD_KEY, "");
+    String truststoreType = conf.get(
+        VaultCredentialProviderConfig.SSL_TRUSTSTORE_TYPE_KEY,
+        VaultCredentialProviderConfig.SSL_TRUSTSTORE_TYPE_DEFAULT);
+
+    KeyStore truststore = KeyStore.getInstance(truststoreType);
+    try (FileInputStream fis = new FileInputStream(truststoreLocation)) {
+      truststore.load(fis, truststorePassword.toCharArray());
+    }
+    TrustManagerFactory tmf = TrustManagerFactory.getInstance(
+        TrustManagerFactory.getDefaultAlgorithm());
+    tmf.init(truststore);
+
+    SSLContext sslContext = SSLContext.getInstance("TLS");
+    sslContext.init(null, tmf.getTrustManagers(), null);
+    return sslContext;
   }
 
   /**
@@ -307,7 +355,9 @@ public class VaultHttpClient implements Closeable {
     if (sslSocketFactory != null && conn instanceof HttpsURLConnection) {
       HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
       httpsConn.setSSLSocketFactory(sslSocketFactory);
-      httpsConn.setHostnameVerifier(sslFactory.getHostnameVerifier());
+      if (sslFactory != null) {
+        httpsConn.setHostnameVerifier(sslFactory.getHostnameVerifier());
+      }
     }
 
     return conn;
