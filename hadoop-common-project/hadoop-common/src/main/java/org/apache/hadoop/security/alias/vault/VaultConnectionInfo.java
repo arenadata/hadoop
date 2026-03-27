@@ -43,12 +43,14 @@ public class VaultConnectionInfo {
 
   public static final int DEFAULT_PORT = 8200;
   public static final String DEFAULT_PROTOCOL = "https";
+  public static final String DEFAULT_SECRET_KEY = "value";
 
   private final String protocol;
   private final String host;
   private final int port;
   private final String mount;
   private final String basePath;
+  private final String secretKey;
 
   /**
    * Parse a Vault URI into connection info.
@@ -121,6 +123,22 @@ public class VaultConnectionInfo {
     } else {
       this.mount = path.substring(0, slashIdx);
       this.basePath = path.substring(slashIdx + 1);
+    }
+
+    // Parse ?key= query parameter
+    String query = uri.getQuery();
+    if (query != null) {
+      String parsedKey = null;
+      for (String param : query.split("&")) {
+        if (param.startsWith("key=")) {
+          parsedKey = param.substring(4);
+          break;
+        }
+      }
+      this.secretKey = (parsedKey != null && !parsedKey.isEmpty())
+          ? parsedKey : DEFAULT_SECRET_KEY;
+    } else {
+      this.secretKey = DEFAULT_SECRET_KEY;
     }
   }
 
@@ -221,5 +239,16 @@ public class VaultConnectionInfo {
 
   public String getBasePath() {
     return basePath;
+  }
+
+  /**
+   * Get the key name used to read/write the secret value within a
+   * Vault KV v2 secret. Defaults to {@code "value"}, configurable
+   * via {@code ?key=} query parameter in the provider URI.
+   *
+   * @return the secret field key name
+   */
+  public String getSecretKey() {
+    return secretKey;
   }
 }

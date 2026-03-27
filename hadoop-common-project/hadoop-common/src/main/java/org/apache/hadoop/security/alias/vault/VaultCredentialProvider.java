@@ -196,7 +196,7 @@ public class VaultCredentialProvider extends CredentialProvider {
       }
     }
 
-    String value = httpClient.readSecret(dataPath);
+    String value = httpClient.readSecret(dataPath, connInfo.getSecretKey());
     if (value == null) {
       return null;
     }
@@ -228,7 +228,7 @@ public class VaultCredentialProvider extends CredentialProvider {
 
     String dataPath = connInfo.buildDataPath(name);
     String value = new String(credential);
-    httpClient.writeSecret(dataPath, value);
+    httpClient.writeSecret(dataPath, connInfo.getSecretKey(), value);
 
     if (cacheEnabled) {
       credentialCache.put(buildCacheKey(dataPath), value);

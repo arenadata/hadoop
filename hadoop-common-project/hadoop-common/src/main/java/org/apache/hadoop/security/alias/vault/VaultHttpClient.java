@@ -186,13 +186,22 @@ public class VaultHttpClient implements Closeable {
   }
 
   /**
+   * Read a secret value from Vault using the default key {@code "value"}.
+   */
+  public String readSecret(String dataPath) throws IOException {
+    return readSecret(dataPath, VaultConnectionInfo.DEFAULT_SECRET_KEY);
+  }
+
+  /**
    * Read a secret value from Vault.
    *
    * @param dataPath the KV v2 data path
+   * @param secretKey the key within the secret's data map
    * @return the secret value, or null if not found
    * @throws IOException if the request fails
    */
-  public String readSecret(String dataPath) throws IOException {
+  public String readSecret(String dataPath, String secretKey)
+      throws IOException {
     String url = connInfo.getBaseUrl() + "/v1/" + dataPath;
 
     String responseBody = executeWithRetry("GET", url, null, false);
@@ -205,7 +214,7 @@ public class VaultHttpClient implements Closeable {
     if (response.data == null || response.data.data == null) {
       return null;
     }
-    return response.data.data.get("value");
+    return response.data.data.get(secretKey);
   }
 
   /**
@@ -241,18 +250,27 @@ public class VaultHttpClient implements Closeable {
   }
 
   /**
+   * Write a secret value to Vault using the default key {@code "value"}.
+   */
+  public void writeSecret(String dataPath, String value) throws IOException {
+    writeSecret(dataPath, VaultConnectionInfo.DEFAULT_SECRET_KEY, value);
+  }
+
+  /**
    * Write a secret value to Vault.
    *
    * @param dataPath the KV v2 data path
+   * @param secretKey the key within the secret's data map
    * @param value the secret value
    * @throws IOException if the request fails
    */
-  public void writeSecret(String dataPath, String value) throws IOException {
+  public void writeSecret(String dataPath, String secretKey, String value)
+      throws IOException {
     String url = connInfo.getBaseUrl() + "/v1/" + dataPath;
 
     Map<String, Object> data = new HashMap<>();
     Map<String, String> innerData = new HashMap<>();
-    innerData.put("value", value);
+    innerData.put(secretKey, value);
     data.put("data", innerData);
 
     String jsonBody = MAPPER.writeValueAsString(data);
