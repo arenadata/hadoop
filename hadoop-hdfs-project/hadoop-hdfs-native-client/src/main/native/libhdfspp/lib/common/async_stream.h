@@ -22,6 +22,7 @@
 #include <boost/asio/buffer.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/asio/system_executor.hpp>
+#include "hdfspp/asio_compat.h"
 
 #include <functional>
 

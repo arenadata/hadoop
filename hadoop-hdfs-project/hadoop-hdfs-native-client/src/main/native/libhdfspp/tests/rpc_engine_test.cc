@@ -30,8 +30,6 @@
 #include <google/protobuf/io/coded_stream.h>
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
-#include <gmock/gmock-spec-builders.h>
-#include <gmock/gmock-generated-actions.h>
 #include <boost/system/error_code.hpp>
 #include <boost/date_time/posix_time/posix_time_duration.hpp>
 
@@ -61,14 +59,14 @@ std::vector<ResolvedNamenodeInfo> make_endpoint() {
 
 class MockRPCConnection : public MockConnectionBase {
  public:
-  MockRPCConnection(boost::asio::io_service &io_service)
+  MockRPCConnection(hdfs::asio_compat::io_service &io_service)
       : MockConnectionBase(&io_service) {}
   MOCK_METHOD0(Produce, ProducerResult());
 };
 
 class SharedMockRPCConnection : public SharedMockConnection {
  public:
-  SharedMockRPCConnection(boost::asio::io_service &io_service)
+  SharedMockRPCConnection(hdfs::asio_compat::io_service &io_service)
       : SharedMockConnection(&io_service) {}
 };
 

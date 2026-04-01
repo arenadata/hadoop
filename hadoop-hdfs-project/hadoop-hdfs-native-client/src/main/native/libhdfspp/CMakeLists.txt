@@ -59,10 +59,9 @@ include(FetchContent)
 # https://github.com/google/googletest/blob/e649993a402d96afe25fbf3413749adf0f2947f6/googletest/README.md#incorporating-into-an-existing-cmake-project
 FetchContent_Declare(
   googletest
-  URL https://github.com/google/googletest/archive/703bd9caab50b139428cea1aaff9974ebee5742e.zip
+  URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.zip
 )
-# The commit SHA 703bd9caab50b139428cea1aaff9974ebee5742e in the URL above corresponds to the
-# tag release-1.10.0 in the googletest repository.
+# Updated from release-1.10.0 to v1.15.2 for compatibility with modern compilers.
 # For Windows: Prevent overriding the parent project's compiler/linker settings
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)

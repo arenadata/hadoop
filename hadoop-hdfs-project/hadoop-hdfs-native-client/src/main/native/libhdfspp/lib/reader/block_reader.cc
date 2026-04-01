@@ -288,11 +288,9 @@ struct BlockReaderImpl::ReadData : continuation::Continuation
         const boost::asio::mutable_buffers_1 &buf) : parent_(parent),
                                                      bytes_transferred_(bytes_transferred), buf_(buf), shared_conn_(parent->dn_)
   {
-    buf_.begin();
   }
 
   ~ReadData() {
-    buf_.end();
   }
 
   virtual void Run(const Next &next) override {

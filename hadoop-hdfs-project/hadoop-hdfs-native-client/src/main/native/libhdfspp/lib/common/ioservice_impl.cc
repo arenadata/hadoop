@@ -102,7 +102,7 @@ void IoServiceImpl::ThreadExitHook() {
 }
 
 void IoServiceImpl::PostTask(std::function<void(void)> asyncTask) {
-  io_service_.post(asyncTask);
+  hdfs::asio_compat::post(io_service_, asyncTask);
 }
 
 void IoServiceImpl::WorkerDeleter::operator()(std::thread *t) {
@@ -125,7 +125,7 @@ void IoServiceImpl::Run() {
   // from escaping this library and crashing the process.
 
   // As recommended in http://www.boost.org/doc/libs/1_39_0/doc/html/boost_asio/reference/io_service.html#boost_asio.reference.io_service.effect_of_exceptions_thrown_from_handlers
-  boost::asio::io_service::work work(io_service_);
+  auto work = hdfs::asio_compat::make_work_guard(io_service_);
   while(true)
   {
     try
@@ -145,7 +145,7 @@ void IoServiceImpl::Stop() {
   io_service_.stop();
 }
 
-boost::asio::io_service& IoServiceImpl::GetRaw() {
+hdfs::asio_compat::io_service& IoServiceImpl::GetRaw() {
   return io_service_;
 }
 

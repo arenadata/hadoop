@@ -61,7 +61,7 @@
 #include <functional>
 #include <memory>
 
-#include <boost/asio/io_service.hpp>
+#include "hdfspp/asio_compat.h"
 
 namespace hdfs {
 
@@ -130,7 +130,7 @@ class IoService : public std::enable_shared_from_this<IoService>
    * Access underlying io_service object.  Only to be used in asio library calls.
    * After HDFS-11884 is complete only tests should need direct access to the asio::io_service.
    **/
-  virtual boost::asio::io_service& GetRaw() = 0;
+  virtual hdfs::asio_compat::io_service& GetRaw() = 0;
 };
 
 

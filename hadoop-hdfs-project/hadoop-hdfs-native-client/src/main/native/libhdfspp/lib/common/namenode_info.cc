@@ -79,7 +79,9 @@ class ScopedResolver {
   std::shared_ptr<IoService> io_service_;
   std::string host_;
   std::string port_;
+#if BOOST_VERSION < 108700
   boost::asio::ip::tcp::resolver::query query_;
+#endif
   boost::asio::ip::tcp::resolver resolver_;
   endpoint_vector endpoints_;
 
@@ -87,7 +89,11 @@ class ScopedResolver {
   std::shared_ptr<std::promise<Status>> result_status_;
  public:
   ScopedResolver(std::shared_ptr<IoService> service, const std::string &host, const std::string &port) :
-        io_service_(service), host_(host), port_(port), query_(host, port), resolver_(io_service_->GetRaw())
+        io_service_(service), host_(host), port_(port),
+#if BOOST_VERSION < 108700
+        query_(host, port),
+#endif
+        resolver_(io_service_->GetRaw())
   {
     if(!io_service_)
       LOG_ERROR(kAsyncRuntime, << "ScopedResolver@" << this << " passed nullptr to io_service");
@@ -111,7 +117,19 @@ class ScopedResolver {
     result_status_ = std::make_shared<std::promise<Status>>();
     std::shared_ptr<std::promise<Status>> shared_result = result_status_;
 
-    // Callback to pull a copy of endpoints out of resolver and set promise
+#if BOOST_VERSION >= 108700
+    // Boost 1.87+: async_resolve takes host/port directly, returns results_type
+    auto callback = [this, shared_result](const boost::system::error_code &ec, boost::asio::ip::tcp::resolver::results_type results) {
+      if(!ec) {
+        for (const auto &entry : results) {
+          endpoints_.push_back(entry.endpoint());
+        }
+      }
+      shared_result->set_value( ToStatus(ec) );
+    };
+    resolver_.async_resolve(host_, port_, callback);
+#else
+    // Boost < 1.87: async_resolve takes query, callback gets iterator
     auto callback = [this, shared_result](const boost::system::error_code &ec, boost::asio::ip::tcp::resolver::iterator out) {
       if(!ec) {
         std::copy(out, boost::asio::ip::tcp::resolver::iterator(), std::back_inserter(endpoints_));
@@ -119,6 +137,7 @@ class ScopedResolver {
       shared_result->set_value( ToStatus(ec) );
     };
     resolver_.async_resolve(query_, callback);
+#endif
     return true;
   }
 

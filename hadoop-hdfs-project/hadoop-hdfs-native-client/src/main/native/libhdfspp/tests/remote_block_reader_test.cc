@@ -29,11 +29,9 @@
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
-#include <gmock/gmock-spec-builders.h>
-#include <gmock/gmock-generated-actions.h>
 #include <boost/system/error_code.hpp>
 #include <boost/asio/buffer.hpp>
-#include <boost/asio/io_service.hpp>
+#include "hdfspp/asio_compat.h"
 
 #include <iostream>
 
@@ -65,7 +63,7 @@ namespace hdfs {
 
 class MockDNConnection : public MockConnectionBase, public DataNodeConnection{
 public:
-  MockDNConnection(boost::asio::io_service &io_service)
+  MockDNConnection(hdfs::asio_compat::io_service &io_service)
       : MockConnectionBase(&io_service), OnRead([](){}) {}
   MOCK_METHOD0(Produce, ProducerResult());
 
@@ -261,7 +259,7 @@ ReadContent(std::shared_ptr<Stream> conn, const ExtendedBlockProto &block,
 TEST(RemoteBlockReaderTest, TestReadWholeBlock) {
   static const size_t kChunkSize = 512;
   static const string kChunkData(kChunkSize, 'a');
-  boost::asio::io_service io_service;
+  hdfs::asio_compat::io_service io_service;
   auto conn = std::make_shared<MockDNConnection>(io_service);
   BlockOpResponseProto block_op_resp;
 
@@ -298,7 +296,7 @@ TEST(RemoteBlockReaderTest, TestCancelWhileReceiving) {
 
   static const size_t kChunkSize = 512;
   static const string kChunkData(kChunkSize, 'a');
-  boost::asio::io_service io_service;
+  hdfs::asio_compat::io_service io_service;
   auto conn = std::make_shared<MockDNConnection>(io_service);
   BlockOpResponseProto block_op_resp;
 
@@ -349,7 +347,7 @@ TEST(RemoteBlockReaderTest, TestReadWithinChunk) {
   static const size_t kOffset = kChunkSize / 4;
   static const string kChunkData = string(kOffset, 'a') + string(kLength, 'b');
 
-  boost::asio::io_service io_service;
+  hdfs::asio_compat::io_service io_service;
   auto conn = std::make_shared<MockDNConnection>(io_service);
   BlockOpResponseProto block_op_resp;
   ReadOpChecksumInfoProto *checksum_info =
@@ -389,7 +387,7 @@ TEST(RemoteBlockReaderTest, TestReadMultiplePacket) {
   static const size_t kChunkSize = 1024;
   static const string kChunkData(kChunkSize, 'a');
 
-  boost::asio::io_service io_service;
+  hdfs::asio_compat::io_service io_service;
   auto conn = std::make_shared<MockDNConnection>(io_service);
   BlockOpResponseProto block_op_resp;
   block_op_resp.set_status(::hadoop::hdfs::Status::SUCCESS);
@@ -439,7 +437,7 @@ TEST(RemoteBlockReaderTest, TestReadCancelBetweenPackets) {
   static const size_t kChunkSize = 1024;
   static const string kChunkData(kChunkSize, 'a');
 
-  boost::asio::io_service io_service;
+  hdfs::asio_compat::io_service io_service;
   auto conn = std::make_shared<MockDNConnection>(io_service);
   BlockOpResponseProto block_op_resp;
   block_op_resp.set_status(::hadoop::hdfs::Status::SUCCESS);
@@ -493,7 +491,7 @@ TEST(RemoteBlockReaderTest, TestSaslConnection) {
   static const string kAuthPayload = "realm=\"0\",nonce=\"+GAWc+O6yEAWpew/"
                                      "qKah8qh4QZLoOLCDcTtEKhlS\",qop=\"auth\","
                                      "charset=utf-8,algorithm=md5-sess";
-  boost::asio::io_service io_service;
+  hdfs::asio_compat::io_service io_service;
   auto conn = std::make_shared<MockDNConnection>(io_service);
   BlockOpResponseProto block_op_resp;
   block_op_resp.set_status(::hadoop::hdfs::Status::SUCCESS);

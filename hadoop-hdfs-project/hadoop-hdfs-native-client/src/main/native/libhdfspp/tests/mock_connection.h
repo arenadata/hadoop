@@ -24,7 +24,7 @@
 #include <boost/system/error_code.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/streambuf.hpp>
-#include <boost/asio/io_service.hpp>
+#include "hdfspp/asio_compat.h"
 
 #include <gmock/gmock.h>
 
@@ -46,7 +46,7 @@ public:
 
 class MockConnectionBase : public AsioProducer, public AsyncStream {
 public:
-  MockConnectionBase(boost::asio::io_service *io_service);
+  MockConnectionBase(hdfs::asio_compat::io_service *io_service);
   virtual ~MockConnectionBase();
   typedef std::pair<boost::system::error_code, std::string> ProducerResult;
 
@@ -59,7 +59,7 @@ public:
         return; // No more reads to do
       }
       if (r.first) {
-        io_service_->post(std::bind(handler, r.first, 0));
+        hdfs::asio_compat::post(*io_service_, std::bind(handler, r.first, 0));
         return;
       }
       boost::asio::mutable_buffers_1 data = produced_.prepare(r.second.size());
@@ -70,26 +70,26 @@ public:
     size_t len = std::min(boost::asio::buffer_size(buf), produced_.size());
     boost::asio::buffer_copy(buf, produced_.data());
     produced_.consume(len);
-    io_service_->post(std::bind(handler, boost::system::error_code(), len));
+    hdfs::asio_compat::post(*io_service_, std::bind(handler, boost::system::error_code(), len));
   }
 
   void async_write_some(const ConstBuffer &buf,
             std::function<void (const boost::system::error_code & error,
                                  std::size_t bytes_transferred) > handler) override {
     // CompletionResult res = OnWrite(buf);
-    io_service_->post(std::bind(handler, boost::system::error_code(), boost::asio::buffer_size(buf)));
+    hdfs::asio_compat::post(*io_service_, std::bind(handler, boost::system::error_code(), boost::asio::buffer_size(buf)));
   }
 
   template <class Endpoint, class Callback>
   void async_connect(const Endpoint &, Callback &&handler) {
-    io_service_->post([handler]() { handler(::boost::system::error_code()); });
+    hdfs::asio_compat::post(*io_service_, [handler]() { handler(::boost::system::error_code()); });
   }
 
   virtual void cancel() {}
   virtual void close() {}
 protected:
   ProducerResult Produce() override = 0;
-  boost::asio::io_service *io_service_;
+  hdfs::asio_compat::io_service *io_service_;
 
 private:
   boost::asio::streambuf produced_;
@@ -115,13 +115,13 @@ public:
     assert(data);
 
     if (!data->checkProducerForConnect) {
-      io_service_->post([handler]() { handler(::boost::system::error_code()); });
+      hdfs::asio_compat::post(*io_service_, [handler]() { handler(::boost::system::error_code()); });
     } else {
       ProducerResult result = Produce();
       if (result.first == boost::asio::error::would_block) {
         return; // Connect will hang
       } else {
-        io_service_->post([handler, result]() { handler( result.first); });
+        hdfs::asio_compat::post(*io_service_, [handler, result]() { handler( result.first); });
       }
     }
   }

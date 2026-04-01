@@ -18,6 +18,7 @@
 
 #include "datanodeconnection.h"
 #include "common/util.h"
+#include "hdfspp/asio_compat.h"
 
 #include <boost/asio/connect.hpp>
 
@@ -35,8 +36,13 @@ DataNodeConnectionImpl::DataNodeConnectionImpl(std::shared_ptr<IoService> io_ser
 
   conn_.reset(new tcp::socket(io_service->GetRaw()));
   auto datanode_addr = dn_proto.id();
+#if BOOST_VERSION >= 108700
+  endpoints_[0] = tcp::endpoint(boost::asio::ip::make_address(datanode_addr.ipaddr()),
+                                  datanode_addr.xferport());
+#else
   endpoints_[0] = tcp::endpoint(address::from_string(datanode_addr.ipaddr()),
                                   datanode_addr.xferport());
+#endif
   uuid_ = dn_proto.id().datanodeuuid();
 
   if (token) {
@@ -73,7 +79,7 @@ void DataNodeConnectionImpl::Cancel() {
 void DataNodeConnectionImpl::async_read_some(const MutableBuffer &buf,
              std::function<void (const boost::system::error_code & error, std::size_t bytes_transferred) > handler)
 {
-  event_handlers_->call("DN_read_req", "", "", buf.end() - buf.begin());
+  event_handlers_->call("DN_read_req", "", "", buf.size());
 
   mutex_guard state_lock(state_lock_);
   conn_->async_read_some(buf, handler);
@@ -82,7 +88,7 @@ void DataNodeConnectionImpl::async_read_some(const MutableBuffer &buf,
 void DataNodeConnectionImpl::async_write_some(const ConstBuffer &buf,
              std::function<void (const boost::system::error_code & error, std::size_t bytes_transferred) > handler)
 {
-  event_handlers_->call("DN_write_req", "", "", buf.end() - buf.begin());
+  event_handlers_->call("DN_write_req", "", "", buf.size());
 
   mutex_guard state_lock(state_lock_);
   conn_->async_write_some(buf, handler);
