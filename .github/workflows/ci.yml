@@ -1,0 +1,174 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: CI
+
+on:
+  push:
+    branches: ['develop/**', 'release/**']
+  pull_request:
+    branches: ['develop/**', 'release/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAVEN_ARGS: -B -V -e -ntp
+  NATIVE_PACKAGES: >-
+    build-essential cmake zlib1g-dev libssl-dev
+    libbz2-dev libsasl2-dev libsnappy-dev libzstd-dev libisal-dev libpmem-dev libfuse-dev libtirpc-dev
+    libboost-all-dev libprotobuf-dev libprotoc-dev protobuf-compiler
+    pkg-config
+
+jobs:
+  compile:
+    name: Compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-java@v4
+      with:
+        java-version: 11
+        distribution: temurin
+        cache: maven
+    - name: Install native dependencies
+      run: sudo apt-get update -q && sudo apt-get install -y -q ${{ env.NATIVE_PACKAGES }}
+    - name: Compile
+      run: >-
+        mvn ${{ env.MAVEN_ARGS }} install -DskipTests -Pnative
+        -Drequire.openssl=true -Drequire.snappy=true
+        -Drequire.zstd=true -Drequire.isal=true -Drequire.pmdk=true
+    - name: Save m2 repository
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.m2/repository
+        key: m2-${{ github.sha }}
+    - name: Save native libraries
+      uses: actions/cache/save@v4
+      with:
+        path: '**/target/native/'
+        key: native-${{ github.sha }}
+
+  test:
+    name: "${{ matrix.name }}"
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Common + Auth + KMS
+            modules: hadoop-common-project/hadoop-common,hadoop-common-project/hadoop-auth,hadoop-common-project/hadoop-kms
+            flags: -Pnative
+            timeout: 45
+
+          - name: HDFS (NameNode)
+            modules: hadoop-hdfs-project/hadoop-hdfs
+            flags: -Pnative -Dtest="org/apache/hadoop/hdfs/server/namenode/**"
+            timeout: 150
+
+          - name: HDFS (DataNode)
+            modules: hadoop-hdfs-project/hadoop-hdfs
+            flags: -Pnative -Dtest="org/apache/hadoop/hdfs/server/datanode/**,org/apache/hadoop/hdfs/server/blockmanagement/**"
+            timeout: 120
+
+          - name: HDFS (Other)
+            modules: hadoop-hdfs-project/hadoop-hdfs
+            flags: -Pnative -Dtest.exclude="org/apache/hadoop/hdfs/server/namenode/**,org/apache/hadoop/hdfs/server/datanode/**,org/apache/hadoop/hdfs/server/blockmanagement/**"
+            timeout: 150
+
+          - name: HDFS RBF + HttpFS + NFS
+            modules: hadoop-hdfs-project/hadoop-hdfs-rbf,hadoop-hdfs-project/hadoop-hdfs-httpfs,hadoop-hdfs-project/hadoop-hdfs-nfs,hadoop-hdfs-project/hadoop-hdfs-native-client,hadoop-hdfs-project/hadoop-hdfs-client
+            flags: -Pnative
+            timeout: 60
+
+          - name: YARN ResourceManager
+            modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager
+            flags: ''
+            timeout: 100
+
+          - name: YARN NodeManager + Client
+            modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client
+            flags: ''
+            timeout: 60
+
+          - name: YARN Apps + Services
+            modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-applications-distributedshell,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-services/hadoop-yarn-services-core,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-services/hadoop-yarn-services-api,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common
+            flags: ''
+            timeout: 60
+
+          - name: YARN Timeline + Server
+            modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-applicationhistoryservice,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timeline-pluginstorage,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice-hbase/hadoop-yarn-server-timelineservice-hbase-client,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice-hbase/hadoop-yarn-server-timelineservice-hbase-common,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice-hbase/hadoop-yarn-server-timelineservice-hbase-server,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-router
+            flags: ''
+            timeout: 30
+
+          - name: MapReduce JobClient
+            modules: hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient
+            flags: ''
+            timeout: 100
+
+          - name: MapReduce Core + App + Streaming
+            modules: hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-nativetask,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-uploader,hadoop-mapreduce-project/hadoop-mapreduce-examples,hadoop-tools/hadoop-streaming
+            flags: -Pnative
+            timeout: 30
+
+          - name: Tools
+            modules: hadoop-tools/hadoop-distcp,hadoop-tools/hadoop-gridmix,hadoop-tools/hadoop-sls,hadoop-tools/hadoop-azure,hadoop-tools/hadoop-aws,hadoop-tools/hadoop-azure-datalake,hadoop-tools/hadoop-archives,hadoop-tools/hadoop-archive-logs,hadoop-tools/hadoop-rumen,hadoop-tools/hadoop-extras,hadoop-tools/hadoop-resourceestimator,hadoop-tools/hadoop-federation-balance,hadoop-tools/hadoop-dynamometer/hadoop-dynamometer-infra,hadoop-tools/hadoop-dynamometer/hadoop-dynamometer-workload,hadoop-tools/hadoop-dynamometer/hadoop-dynamometer-blockgen
+            flags: ''
+            timeout: 60
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-java@v4
+      with:
+        java-version: 11
+        distribution: temurin
+    - name: Restore m2 repository
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.m2/repository
+        key: m2-${{ github.sha }}
+    - name: Restore native libraries
+      if: contains(matrix.flags, '-Pnative')
+      uses: actions/cache/restore@v4
+      with:
+        path: '**/target/native/'
+        key: native-${{ github.sha }}
+    - name: Install native dependencies
+      if: contains(matrix.flags, '-Pnative')
+      run: sudo apt-get update -q && sudo apt-get install -y -q ${{ env.NATIVE_PACKAGES }}
+    - name: Run tests
+      env:
+        LD_LIBRARY_PATH: ${{ github.workspace }}/hadoop-common-project/hadoop-common/target/native/target/usr/local/lib:${{ github.workspace }}/hadoop-hdfs-project/hadoop-hdfs-native-client/target/native/target/usr/local/lib:${{ github.workspace }}/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-nativetask/target/native/target/usr/local/lib:${{ github.workspace }}/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/target/native/target/usr/local/lib
+      run: >-
+        mvn ${{ env.MAVEN_ARGS }} test
+        -pl ${{ matrix.modules }}
+        ${{ matrix.flags }}
+        -Dmaven.javadoc.skip=true
+        -Dsurefire.reuseForks=true
+        -Dmaven.test.failure.ignore=false
+        -fae
+    - name: Upload surefire reports
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: surefire-${{ matrix.name }}
+        path: '**/target/surefire-reports/'
+        if-no-files-found: ignore
