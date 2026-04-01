@@ -111,6 +111,20 @@ public class TestStat extends FileSystemTestHelper {
   }
 
   @Test(timeout=10000)
+  public void testStatLinuxUutils() throws Exception {
+    String[] symlinks = new String[] {
+        "6,symbolic link,1373584236,1373584236,777,andrew,andrew,\"link\" -> \"target\""
+    };
+    StatOutput uutils = new StatOutput(
+        "stat: cannot stat '/watermelon': No such file or directory (os error 2)",
+        "4096,directory,1373584236,1373586485,755,andrew,root,\"/tmp/dir\"",
+        "0,regular empty file,1373584228,1373584228,644,andrew,andrew,\"/tmp/target\"",
+        symlinks,
+        "4096,directory,1374622334,1375124212,1755,andrew,andrew,\"/tmp/stickydir\"");
+    uutils.test();
+  }
+
+  @Test(timeout=10000)
   public void testStatFreeBSD() throws Exception {
     String[] symlinks = new String[] {
         "6,Symbolic Link,1373508941,1373508941,120755,awang,awang,`link' -> `target'"

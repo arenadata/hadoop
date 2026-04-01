@@ -1057,6 +1057,12 @@ public class TestRMWebServicesReservation extends JerseyTestBase {
 
     String reservationJson = loadJsonFile("update-reservation.json");
 
+    long arrival = clock.getTime() + MINIMUM_RESOURCE_DURATION;
+    long deadline = arrival + MINIMUM_RESOURCE_DURATION;
+
+    reservationJson = String.format(reservationJson,
+        reservationId.toString(), arrival, deadline);
+
     JSONJAXBContext jc =
         new JSONJAXBContext(JSONConfiguration.mapped()
             .build(), ReservationUpdateRequestInfo.class);
@@ -1069,7 +1075,6 @@ public class TestRMWebServicesReservation extends JerseyTestBase {
       if(rsci.getReservationId() == null) {
         throw new IOException("Incorrectly parsed the reservationId");
       }
-      rsci.setReservationId(reservationId.toString());
     }
 
     Thread.sleep(1000);

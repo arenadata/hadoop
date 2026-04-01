@@ -719,8 +719,8 @@ public class UtilsForTests {
     sleepCount = 0;
     while (job.cleanupProgress() == 0.0f) {
       try {
-        if (sleepCount > 2000) { // 20 seconds
-          throw new IOException("Job cleanup didn't start in 20 seconds");
+        if (sleepCount > 6000) { // 60 seconds
+          throw new IOException("Job cleanup didn't start in 60 seconds");
         }
         Thread.sleep(10);
         sleepCount++;

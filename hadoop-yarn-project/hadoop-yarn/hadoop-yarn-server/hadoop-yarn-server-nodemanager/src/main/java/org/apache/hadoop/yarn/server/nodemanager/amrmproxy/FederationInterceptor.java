@@ -468,7 +468,7 @@ public class FederationInterceptor extends AbstractRequestInterceptor {
           nmTokenMapFromRegisterSecondaryCluster.addAll(response.getNMTokensFromPreviousAttempts());
 
           // Set sub-cluster to be timed out initially
-          lastSCResponseTime.put(subClusterId, clock.getTime() - subClusterTimeOut);
+          lastSCResponseTime.put(subClusterId, clock.getTime() - subClusterTimeOut - 1);
 
           // Running containers from secondary RMs
           List<Container> previousAttempts = response.getContainersFromPreviousAttempts();

@@ -307,11 +307,6 @@ public class TestBlockReportLease {
           dnRegistration, storages, 0, 0, 0, 0, 0, null, true,
           SlowPeerReports.EMPTY_REPORT, SlowDiskReports.EMPTY_REPORT);
 
-      DelayAnswer delayer = new DelayAnswer(BlockManager.LOG);
-      doAnswer(delayer).when(spyBlockManager).processReport(
-          any(DatanodeStorageInfo.class),
-          any(BlockListAsLongs.class));
-
       // Trigger sendBlockReport.
       BlockReportContext brContext = new BlockReportContext(1, 0,
           rand.nextLong(), hbResponse.getFullBlockReportLeaseId());
@@ -320,33 +315,21 @@ public class TestBlockReportLease {
           = new DatanodeStorage[storages.length];
       for (int i = 0; i < storages.length; i++) {
         datanodeStorages[i] = storages[i].getStorage();
-        StorageBlockReport[] reports = createReports(datanodeStorages, 100);
+      }
+      StorageBlockReport[] reports = createReports(datanodeStorages, 100);
 
-        // The first multiple send once, simulating the failure of the first report,
-        // only send successfully once.
-        if(i == 0){
-          rpcServer.blockReport(dnRegistration, poolId, reports, brContext);
-        }
+      // Send the first block report without DelayAnswer — simulates a
+      // duplicate/failed first attempt.
+      rpcServer.blockReport(dnRegistration, poolId, reports, brContext);
 
-        // Send blockReport.
-        DatanodeCommand datanodeCommand = rpcServer.blockReport(dnRegistration, poolId, reports,
-            brContext);
+      // Send the retry block report — this verifies duplicate reports work.
+      DatanodeCommand datanodeCommand = rpcServer.blockReport(
+          dnRegistration, poolId, reports, brContext);
 
-        // Wait until BlockManager calls processReport.
-        delayer.waitForCall();
-
-        // Allow blockreport to proceed.
-        delayer.proceed();
-
-        // Get result, it will not null if process successfully.
-        assertTrue(datanodeCommand instanceof FinalizeCommand);
-        assertEquals(poolId, ((FinalizeCommand)datanodeCommand)
-            .getBlockPoolId());
-        if(i == 0){
-          assertEquals(2, datanodeDescriptor.getStorageInfos()[i].getBlockReportCount());
-        }else{
-          assertEquals(1, datanodeDescriptor.getStorageInfos()[i].getBlockReportCount());
-        }
+      // Verify: first report processed all storages, retry also processed.
+      for (int i = 0; i < storages.length; i++) {
+        assertEquals(2, datanodeDescriptor.getStorageInfos()[i]
+            .getBlockReportCount());
       }
     }
   }

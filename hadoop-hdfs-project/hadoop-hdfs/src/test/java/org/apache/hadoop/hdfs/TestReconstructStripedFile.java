@@ -666,7 +666,7 @@ public class TestReconstructStripedFile {
           try {
             GenericTestUtils.waitFor(() -> numDelayReader.get() >=
                     ecPolicy.getNumDataUnits() + 1, 50,
-                stripedReadTimeoutInMills * 3
+                stripedReadTimeoutInMills * 6
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't reconstruct the file's first part.");
@@ -702,7 +702,7 @@ public class TestReconstructStripedFile {
    * This UT is used to ensure that we should close block reader
    * before freeing the buffer.
    */
-  @Test(timeout = 120000)
+  @Test(timeout = 240000)
   public void testAbnormallyCloseDoesNotWriteBufferAgain() throws Exception {
     assumeTrue("Ignore case where num parity units <= 1",
         ecPolicy.getNumParityUnits() > 1);
@@ -759,7 +759,7 @@ public class TestReconstructStripedFile {
           try {
             GenericTestUtils.waitFor(() -> numDelayReader.get() >=
                     ecPolicy.getNumDataUnits() + 1, 50,
-                stripedReadTimeoutInMills * 3
+                stripedReadTimeoutInMills * 6
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't reconstruct the file's first part.");
@@ -774,7 +774,7 @@ public class TestReconstructStripedFile {
                       closeByNPE, continueRead);
                   return closeByNPE.get() ? continueRead.get()
                     : index == finishedReadBlock.get() + 1; }, 5,
-                stripedReadTimeoutInMills * 3
+                stripedReadTimeoutInMills * 6
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't reconstruct the file's remaining part.");
@@ -800,7 +800,7 @@ public class TestReconstructStripedFile {
           try {
             GenericTestUtils.waitFor(() -> finishedReadBlock.get() >=
                     2 * ecPolicy.getNumDataUnits() + 1, 50,
-                stripedReadTimeoutInMills * 3
+                stripedReadTimeoutInMills * 6
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't finish the file's reconstruction.");
@@ -815,7 +815,7 @@ public class TestReconstructStripedFile {
       // at least one timeout reader
       GenericTestUtils.waitFor(() -> finishedReadBlock.get() >=
               2 * ecPolicy.getNumDataUnits() + 1, 50,
-          stripedReadTimeoutInMills * 3
+          stripedReadTimeoutInMills * 6
       );
 
       assertBufferPoolIsEmpty(bufferPool, false);

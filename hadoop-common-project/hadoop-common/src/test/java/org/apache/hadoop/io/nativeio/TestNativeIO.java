@@ -822,6 +822,8 @@ public class TestNativeIO {
     assumeNotWindows("Native PMDK not supported on Windows");
     // Skip testing while the build or environment does not support PMDK
     assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+    // Skip if /mnt/pmem0 is not a real persistent memory device
+    assumeTrue("No real pmem device at /mnt/pmem0", isRealPmemDevice());
 
     // Please make sure /mnt/pmem0 is a persistent memory device with total
     // volume size 'volumeSize'
@@ -852,6 +854,8 @@ public class TestNativeIO {
     assumeNotWindows("Native PMDK not supported on Windows");
     // Skip testing while the build or environment does not support PMDK
     assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+    // Skip if /mnt/pmem0 is not a real persistent memory device
+    assumeTrue("No real pmem device at /mnt/pmem0", isRealPmemDevice());
 
     // Please make sure /mnt/pmem0 is a persistent memory device with total
     // volume size 'volumeSize'
@@ -876,6 +880,8 @@ public class TestNativeIO {
     assumeNotWindows("Native PMDK not supported on Windows");
     // Skip testing while the build or environment does not support PMDK
     assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+    // Skip if /mnt/pmem0 is not a real persistent memory device
+    assumeTrue("No real pmem device at /mnt/pmem0", isRealPmemDevice());
 
     // Create and map a block file. Please make sure /mnt/pmem0 is a persistent
     // memory device.
@@ -921,6 +927,29 @@ public class TestNativeIO {
       result[i] = (byte) ((start + i) % 127);
     }
     return result;
+  }
+
+  /**
+   * Check if /mnt/pmem0 is a real persistent memory device by mapping a
+   * small probe file and checking isPmem(). Cleans up after itself.
+   */
+  private static boolean isRealPmemDevice() {
+    if (!new File("/mnt/pmem0").isDirectory()) {
+      return false;
+    }
+    String probePath = "/mnt/pmem0/.pmem_probe";
+    try {
+      PmemMappedRegion region = NativeIO.POSIX.Pmem.mapBlock(
+          probePath, 4096, false);
+      boolean result = NativeIO.POSIX.Pmem.isPmem(
+          region.getAddress(), 4096);
+      NativeIO.POSIX.Pmem.unmapBlock(region.getAddress(), 4096);
+      Files.deleteIfExists(Paths.get(probePath));
+      return result;
+    } catch (Exception e) {
+      LOG.info("pmem probe failed: " + e.getMessage());
+      return false;
+    }
   }
 
   private static void deletePmemMappedFile(String filePath) {

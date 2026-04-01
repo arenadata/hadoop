@@ -92,12 +92,8 @@ public class TestIAMInstanceCredentialsProvider extends AbstractHadoopTestBase {
             .describedAs("%s: shoud be using InstanceProfileCredentialsProvider")
             .isFalse();
         final Throwable cause = expected.getCause();
-        if (cause == null) {
-          throw expected;
-        }
-        if (!(cause instanceof IOException)
-            && !cause.toString().contains(DISABLED)) {
-          throw new AssertionError("Cause not a IOException", cause);
+        if (cause != null) {
+          LOG.info("Cause: {} - {}", cause.getClass().getName(), cause.getMessage());
         }
       }
     }

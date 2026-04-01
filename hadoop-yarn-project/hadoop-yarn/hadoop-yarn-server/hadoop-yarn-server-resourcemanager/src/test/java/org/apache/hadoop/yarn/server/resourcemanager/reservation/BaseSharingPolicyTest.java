@@ -79,7 +79,11 @@ public abstract class BaseSharingPolicyTest {
   public void setup() {
     // 1 sec step
     step = 1000L;
-    initTime = System.currentTimeMillis();
+    // Use a fixed value aligned to period boundaries to avoid flaky behavior.
+    // The parameterized tests use periods of 7200000ms (2h) and 86400000ms
+    // (24h). Using a multiple of the largest period ensures initTime % period
+    // is always 0, placing allocations at the start of the period.
+    initTime = 86400000L;
 
     minAlloc = Resource.newInstance(1024, 1);
     res = new DefaultResourceCalculator();

@@ -116,11 +116,11 @@ public class Stat extends Shell {
     if (line == null) {
       throw new IOException("Unable to stat path: " + original);
     }
-    if (line.endsWith("No such file or directory") ||
-        line.endsWith("Not a directory")) {
+    if (line.contains("No such file or directory") ||
+        line.contains("Not a directory")) {
       throw new FileNotFoundException("File " + original + " does not exist");
     }
-    if (line.endsWith("Too many levels of symbolic links")) {
+    if (line.contains("Too many levels of symbolic links")) {
       throw new IOException("Possible cyclic loop while following symbolic" +
           " link " + original);
     }

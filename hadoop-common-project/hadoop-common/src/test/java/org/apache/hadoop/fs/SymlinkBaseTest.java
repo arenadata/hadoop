@@ -1372,12 +1372,18 @@ public abstract class SymlinkBaseTest {
     createAndWriteFile(file);
     wrapper.createSymlink(file, link, false);
     long at = wrapper.getFileLinkStatus(link).getAccessTime();
-    // the local file system may not support millisecond timestamps
-    wrapper.setTimes(link, 2000L, 3000L);
+    // Use recent timestamps to avoid relatime updating atime on ext4.
+    long mtime = (System.currentTimeMillis() / 1000) * 1000 - 120000;
+    long atime = (System.currentTimeMillis() / 1000) * 1000 - 60000;
+    wrapper.setTimes(link, mtime, atime);
     assertTrue("The atime of symlink should not be lesser after setTimes()",
         wrapper.getFileLinkStatus(link).getAccessTime() >= at);
-    assertEquals(2000, wrapper.getFileStatus(file).getModificationTime());
-    assertEquals(3000, wrapper.getFileStatus(file).getAccessTime());
+    FileStatus status = wrapper.getFileStatus(file);
+    assertEquals(mtime, status.getModificationTime());
+    // On filesystems with relatime, atime may be updated to the current
+    // time if the file is accessed between setTimes and getFileStatus.
+    assertTrue("The atime of target should be at least the set value",
+        status.getAccessTime() >= atime);
   }
 
   @Test(timeout=10000)
@@ -1388,12 +1394,18 @@ public abstract class SymlinkBaseTest {
     wrapper.mkdir(dir, FileContext.DEFAULT_PERM, false);
     wrapper.createSymlink(dir, link, false);
     long at = wrapper.getFileLinkStatus(link).getAccessTime();
-    // the local file system may not support millisecond timestamps
-    wrapper.setTimes(link, 2000L, 3000L);
+    // Use recent timestamps to avoid relatime updating atime on ext4.
+    long mtime = (System.currentTimeMillis() / 1000) * 1000 - 120000;
+    long atime = (System.currentTimeMillis() / 1000) * 1000 - 60000;
+    wrapper.setTimes(link, mtime, atime);
     assertTrue("The atime of symlink should not be lesser after setTimes()",
         wrapper.getFileLinkStatus(link).getAccessTime() >= at);
-    assertEquals(2000, wrapper.getFileStatus(dir).getModificationTime());
-    assertEquals(3000, wrapper.getFileStatus(dir).getAccessTime());
+    FileStatus status = wrapper.getFileStatus(dir);
+    assertEquals(mtime, status.getModificationTime());
+    // On filesystems with relatime, atime may be updated to the current
+    // time if the directory is accessed between setTimes and getFileStatus.
+    assertTrue("The atime of target should be at least the set value",
+        status.getAccessTime() >= atime);
   }
 
   @Test(timeout=10000)

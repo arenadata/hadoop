@@ -1236,12 +1236,18 @@ public class TestWorkPreservingRMRestart extends ParameterizedSchedulerTestBase 
     // cached release request is cleaned.
     // assertFalse(scheduler.getPendingRelease().contains(runningContainer));
 
-    AllocateResponse response = am1.allocate(null, null);
     // AM gets notified of the completed container.
+    // Retry allocate since the completed container may not appear immediately.
     boolean receivedCompletedContainer = false;
-    for (ContainerStatus status : response.getCompletedContainersStatuses()) {
-      if (status.getContainerId().equals(runningContainer)) {
-        receivedCompletedContainer = true;
+    for (int i = 0; i < 20 && !receivedCompletedContainer; i++) {
+      AllocateResponse response = am1.allocate(null, null);
+      for (ContainerStatus status : response.getCompletedContainersStatuses()) {
+        if (status.getContainerId().equals(runningContainer)) {
+          receivedCompletedContainer = true;
+        }
+      }
+      if (!receivedCompletedContainer) {
+        Thread.sleep(200);
       }
     }
     assertTrue(receivedCompletedContainer);

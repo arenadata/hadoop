@@ -784,7 +784,7 @@ public class TestFederationInterceptor extends BaseAMRMProxyTest {
       Assert.assertEquals(0, interceptor.getTimedOutSCs(true).size());
 
       // Let all SC timeout (home and SC-1), without an allocate from AM
-      Thread.sleep(800);
+      Thread.sleep(2000);
 
       // Should not be considered timeout, because there's no recent AM
       // heartbeat

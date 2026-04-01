@@ -134,10 +134,11 @@ public class CommonJobTest {
           final Path in = new Path("foo").makeQualified(
                   GridmixTestUtils.dfs.getUri(),
                   GridmixTestUtils.dfs.getWorkingDirectory());
-          // data was compressed. All files = compressed test size+ logs= 1000000/2 + logs
+          // data was compressed. All files = compressed test size + logs
+          // Exact size depends on commons-lang3 RandomStringUtils version
           final ContentSummary generated = GridmixTestUtils.dfs
                   .getContentSummary(in);
-          assertEquals(550000, generated.getLength(), 10000);
+          assertEquals(550000, generated.getLength(), 50000);
 
           Counter counter = job.getCounters()
                   .getGroup("org.apache.hadoop.mapreduce.FileSystemCounter")
