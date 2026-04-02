@@ -318,18 +318,35 @@ public class TestBlockReportLease {
       }
       StorageBlockReport[] reports = createReports(datanodeStorages, 100);
 
-      // Send the first block report without DelayAnswer — simulates a
-      // duplicate/failed first attempt.
+      // Record current counts — the DN's BPServiceActor may have already
+      // sent block reports in the background.
+      int[] baselineCounts = new int[storages.length];
+      for (int i = 0; i < storages.length; i++) {
+        baselineCounts[i] = datanodeDescriptor.getStorageInfos()[i]
+            .getBlockReportCount();
+      }
+
+      // Send the first block report — simulates the initial attempt that
+      // succeeds on the NN but the DN considers it failed (e.g. RPC timeout).
       rpcServer.blockReport(dnRegistration, poolId, reports, brContext);
 
-      // Send the retry block report — this verifies duplicate reports work.
-      DatanodeCommand datanodeCommand = rpcServer.blockReport(
-          dnRegistration, poolId, reports, brContext);
+      // DN retries: sends a new heartbeat to get a fresh lease, then resends
+      // the block report. This is the realistic retry path.
+      HeartbeatResponse hbResponse2 = rpcServer.sendHeartbeat(
+          dnRegistration, storages, 0, 0, 0, 0, 0, null, true,
+          SlowPeerReports.EMPTY_REPORT, SlowDiskReports.EMPTY_REPORT);
+      BlockReportContext brContext2 = new BlockReportContext(1, 0,
+          rand.nextLong(), hbResponse2.getFullBlockReportLeaseId());
 
-      // Verify: first report processed all storages, retry also processed.
+      // Send the retry block report with the new lease.
+      rpcServer.blockReport(dnRegistration, poolId, reports, brContext2);
+
+      // Verify: both of our reports were processed for all storages.
       for (int i = 0; i < storages.length; i++) {
-        assertEquals(2, datanodeDescriptor.getStorageInfos()[i]
-            .getBlockReportCount());
+        int delta = datanodeDescriptor.getStorageInfos()[i]
+            .getBlockReportCount() - baselineCounts[i];
+        assertTrue("Expected at least 2 additional block reports for storage "
+            + i + ", but got " + delta, delta >= 2);
       }
     }
   }

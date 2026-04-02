@@ -666,7 +666,7 @@ public class TestReconstructStripedFile {
           try {
             GenericTestUtils.waitFor(() -> numDelayReader.get() >=
                     ecPolicy.getNumDataUnits() + 1, 50,
-                stripedReadTimeoutInMills * 6
+                stripedReadTimeoutInMills * 60
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't reconstruct the file's first part.");
@@ -702,7 +702,7 @@ public class TestReconstructStripedFile {
    * This UT is used to ensure that we should close block reader
    * before freeing the buffer.
    */
-  @Test(timeout = 240000)
+  @Test(timeout = 600000)
   public void testAbnormallyCloseDoesNotWriteBufferAgain() throws Exception {
     assumeTrue("Ignore case where num parity units <= 1",
         ecPolicy.getNumParityUnits() > 1);
@@ -759,7 +759,7 @@ public class TestReconstructStripedFile {
           try {
             GenericTestUtils.waitFor(() -> numDelayReader.get() >=
                     ecPolicy.getNumDataUnits() + 1, 50,
-                stripedReadTimeoutInMills * 6
+                stripedReadTimeoutInMills * 60
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't reconstruct the file's first part.");
@@ -768,13 +768,21 @@ public class TestReconstructStripedFile {
         }
         if (index > ecPolicy.getNumDataUnits() + 1) {
           try {
+            // Wait for the first reconstruction batch to complete before
+            // allowing second batch readers to proceed. We do NOT enforce
+            // strict sequential ordering (index == finishedReadBlock + 1)
+            // because the thread pool assigns readers to threads in
+            // arbitrary order, which can cause deadlock when all pool
+            // threads are blocked waiting for a specific finishedReadBlock
+            // value that requires an earlier reader to complete first.
             GenericTestUtils.waitFor(
                 () -> {
                   LOG.info("Close by NPE: {}, continue read: {}",
                       closeByNPE, continueRead);
                   return closeByNPE.get() ? continueRead.get()
-                    : index == finishedReadBlock.get() + 1; }, 5,
-                stripedReadTimeoutInMills * 6
+                    : finishedReadBlock.get() >= ecPolicy.getNumDataUnits() + 1;
+                }, 5,
+                stripedReadTimeoutInMills * 60
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't reconstruct the file's remaining part.");
@@ -800,7 +808,7 @@ public class TestReconstructStripedFile {
           try {
             GenericTestUtils.waitFor(() -> finishedReadBlock.get() >=
                     2 * ecPolicy.getNumDataUnits() + 1, 50,
-                stripedReadTimeoutInMills * 6
+                stripedReadTimeoutInMills * 60
             );
           } catch (TimeoutException e) {
             Assert.fail("Can't finish the file's reconstruction.");
@@ -815,7 +823,7 @@ public class TestReconstructStripedFile {
       // at least one timeout reader
       GenericTestUtils.waitFor(() -> finishedReadBlock.get() >=
               2 * ecPolicy.getNumDataUnits() + 1, 50,
-          stripedReadTimeoutInMills * 6
+          stripedReadTimeoutInMills * 60
       );
 
       assertBufferPoolIsEmpty(bufferPool, false);

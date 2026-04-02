@@ -198,12 +198,17 @@ public class TestTimelineAuthFilterForV2 {
       conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY,
           HttpConfig.Policy.HTTP_ONLY.name());
     }
-    // Set delegation token renew interval and max lifetime.
-    // Values must be large enough to avoid race conditions on slow CI runners.
-    conf.setLong(
-        YarnConfiguration.TIMELINE_DELEGATION_TOKEN_RENEW_INTERVAL, 2000);
-    conf.setLong(
-        YarnConfiguration.TIMELINE_DELEGATION_TOKEN_MAX_LIFETIME, 20000);
+    if (!withKerberosLogin) {
+      // For timeline delegation token based access, set delegation token renew
+      // interval to 100 ms. to test if timeline delegation token for the app is
+      // renewed automatically if app is still alive.
+      conf.setLong(
+          YarnConfiguration.TIMELINE_DELEGATION_TOKEN_RENEW_INTERVAL, 100);
+      // Set token max lifetime to 4 seconds to test if timeline delegation
+      // token for the app is regenerated automatically if app is still alive.
+      conf.setLong(
+          YarnConfiguration.TIMELINE_DELEGATION_TOKEN_MAX_LIFETIME, 4000);
+    }
     UserGroupInformation.setConfiguration(conf);
     collectorManager = new DummyNodeTimelineCollectorManager();
     PerNodeTimelineCollectorsAuxService as = new PerNodeTimelineCollectorsAuxService();
@@ -374,7 +379,7 @@ public class TestTimelineAuthFilterForV2 {
 
       // Verify if token is renewed automatically and entities can still be
       // published.
-      Thread.sleep(2000);
+      Thread.sleep(1000);
       // Entities should publish successfully after renewal.
       assertTrue(publishWithRetries(appId, entityTypeDir, entityType, 2),
           "Entities should have been published successfully.");
@@ -383,19 +388,31 @@ public class TestTimelineAuthFilterForV2 {
           renewToken(eq(collector.getDelegationTokenForApp()),
           any(String.class));
 
-      // Wait until token expires and gets regenerated.
-      // Use polling instead of fixed sleep to handle slow CI runners.
+      // Wait to ensure lifetime of token expires and ensure its regenerated
+      // automatically.
+      Thread.sleep(3000);
       final Token<TimelineDelegationTokenIdentifier> origToken = token;
-      for (int i = 0; i < 120; i++) {
+      for (int i = 0; i < 40; i++) {
         if (!origToken.equals(collector.getDelegationTokenForApp())) {
           break;
         }
-        Thread.sleep(1000);
+        Thread.sleep(50);
       }
       assertNotEquals(origToken,
           collector.getDelegationTokenForApp(),
           "Token should have been regenerated.");
-      Thread.sleep(2000);
+
+      // Wait for ExpiredTokenRemover to run and remove the expired token.
+      // The remover thread sleeps min(5000, keyUpdateInterval) ms between
+      // iterations, so we need to poll rather than use a fixed sleep.
+      for (int i = 0; i < 20; i++) {
+        if (((DummyNodeTimelineCollectorManager) collectorManager)
+            .getTokenExpiredCnt() > 0) {
+          break;
+        }
+        Thread.sleep(1000);
+      }
+
       // Try publishing with the old token in UGI. Publishing should fail due
       // to invalid token.
       try {

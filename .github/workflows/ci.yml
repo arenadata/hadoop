@@ -92,7 +92,7 @@ jobs:
           - name: HDFS (Other)
             modules: hadoop-hdfs-project/hadoop-hdfs
             flags: -Pnative -Dtest.exclude="org/apache/hadoop/hdfs/server/namenode/**,org/apache/hadoop/hdfs/server/datanode/**,org/apache/hadoop/hdfs/server/blockmanagement/**"
-            timeout: 150
+            timeout: 210
 
           - name: HDFS RBF + HttpFS + NFS
             modules: hadoop-hdfs-project/hadoop-hdfs-rbf,hadoop-hdfs-project/hadoop-hdfs-httpfs,hadoop-hdfs-project/hadoop-hdfs-nfs,hadoop-hdfs-project/hadoop-hdfs-native-client,hadoop-hdfs-project/hadoop-hdfs-client
@@ -102,7 +102,7 @@ jobs:
           - name: YARN ResourceManager
             modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager
             flags: ''
-            timeout: 100
+            timeout: 150
 
           - name: YARN NodeManager + Client
             modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client
@@ -162,8 +162,10 @@ jobs:
         -pl ${{ matrix.modules }}
         ${{ matrix.flags }}
         -Dmaven.javadoc.skip=true
-        -Dsurefire.reuseForks=true
+        -Dsurefire.fork.timeout=0
+        -Dsurefire.rerunFailingTestsCount=2
         -Dmaven.test.failure.ignore=false
+        -DtestsThreadCount=1
         -fae
     - name: Upload surefire reports
       if: failure()

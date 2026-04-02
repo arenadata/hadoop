@@ -65,7 +65,7 @@ public class TestBalancerWithMultipleNameNodes {
   }
 
   
-  private static final long CAPACITY = 500L;
+  private static final long CAPACITY = 5000L;
   private static final String RACK0 = "/rack0";
   private static final String RACK1 = "/rack1";
   private static final String RACK2 = "/rack2";

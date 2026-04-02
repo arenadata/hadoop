@@ -181,6 +181,31 @@ public class TestBlockTokenWithShortCircuitRead {
   private void checkShmAndSlots(ShortCircuitCache cache,
       final DatanodeInfo datanode,
       final int expectedSlotCnt) throws IOException {
+    // ShortCircuitCache cleans up slots asynchronously, so poll until
+    // the expected count is reached rather than asserting immediately.
+    final int maxAttempts = 20;
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      final int[] slotCnt = {0};
+      final boolean[] matched = {false};
+      cache.getDfsClientShmManager().visit(new Visitor() {
+        @Override
+        public void visit(HashMap<DatanodeInfo, PerDatanodeVisitorInfo> info) {
+          if (info.size() != 1) return;
+          PerDatanodeVisitorInfo vinfo = info.get(datanode);
+          if (vinfo == null || vinfo.disabled) return;
+          if (vinfo.full.size() != 0 || vinfo.notFull.size() != 1) return;
+          DfsClientShm shm = vinfo.notFull.values().iterator().next();
+          for (Iterator<Slot> iter = shm.slotIterator(); iter.hasNext();) {
+            iter.next();
+            slotCnt[0]++;
+          }
+          matched[0] = (slotCnt[0] == expectedSlotCnt);
+        }
+      });
+      if (matched[0]) return;
+      try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+    }
+    // Final assert to get proper error message
     cache.getDfsClientShmManager().visit(new Visitor() {
       @Override
       public void visit(HashMap<DatanodeInfo, PerDatanodeVisitorInfo> info) {
