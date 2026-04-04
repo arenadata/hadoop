@@ -1041,6 +1041,7 @@ public class NameNode extends ReconfigurableBase implements
     if(rpcServer != null) rpcServer.stop();
     if(namesystem != null) namesystem.close();
     if (pauseMonitor != null) pauseMonitor.stop();
+    if (gcTimeMonitor != null) gcTimeMonitor.shutdown();
     if (plugins != null) {
       for (ServicePlugin p : plugins) {
         try {
