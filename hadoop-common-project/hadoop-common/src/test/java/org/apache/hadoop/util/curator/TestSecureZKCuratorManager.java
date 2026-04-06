@@ -62,16 +62,27 @@ public class TestSecureZKCuratorManager {
   @Before
   public void setup() throws Exception {
     // inject values to the ZK configuration file for secure connection
+    String testDataPath = "src/test/java/org/apache/hadoop/util/curator"
+        + "/resources/data";
     Map<String, Object> customConfiguration = new HashMap<>();
     customConfiguration.put("secureClientPort", String.valueOf(SECURE_CLIENT_PORT));
-    customConfiguration.put("audit.enable", true);
+    customConfiguration.put("audit.enable", "true");
+    customConfiguration.put("ssl.keyStore.location",
+        new File(testDataPath + "/ssl/keystore.jks").getAbsolutePath());
+    customConfiguration.put("ssl.keyStore.password", "password");
+    customConfiguration.put("ssl.trustStore.location",
+        new File(testDataPath + "/ssl/truststore.jks").getAbsolutePath());
+    customConfiguration.put("ssl.trustStore.password", "password");
+    customConfiguration.put("ssl.hostnameVerification", "false");
     this.hadoopConf = setUpSecureConfig();
     InstanceSpec spec =
-        new InstanceSpec(ZK_DATA_DIR, SECURE_CLIENT_PORT, ELECTION_PORT, QUORUM_PORT,
+        new InstanceSpec(ZK_DATA_DIR, 0, ELECTION_PORT, QUORUM_PORT,
             DELETE_DATA_DIRECTORY_ON_CLOSE, SERVER_ID, TICK_TIME, MAX_CLIENT_CNXNS,
             customConfiguration);
     this.server = new TestingServer(spec, true);
-    this.hadoopConf.set(CommonConfigurationKeys.ZK_ADDRESS, this.server.getConnectString());
+    // Connect via secureClientPort for SSL
+    this.hadoopConf.set(CommonConfigurationKeys.ZK_ADDRESS,
+        spec.getHostname() + ":" + SECURE_CLIENT_PORT);
     this.curator = new ZKCuratorManager(this.hadoopConf);
     this.curator.start(new ArrayList<>(), true);
   }
@@ -111,11 +122,12 @@ public class TestSecureZKCuratorManager {
     System.setProperty("zookeeper.serverCnxnFactory",
         NettyServerCnxnFactory.class.getCanonicalName());
 
-    System.setProperty("zookeeper.ssl.keyStore.location", testDataPath + "keystore.jks");
+    System.setProperty("zookeeper.ssl.keyStore.location", testDataPath + "/ssl/keystore.jks");
     System.setProperty("zookeeper.ssl.keyStore.password", "password");
-    System.setProperty("zookeeper.ssl.trustStore.location", testDataPath + "truststore.jks");
+    System.setProperty("zookeeper.ssl.trustStore.location", testDataPath + "/ssl/truststore.jks");
     System.setProperty("zookeeper.ssl.trustStore.password", "password");
     System.setProperty("zookeeper.request.timeout", "12345");
+    System.setProperty("zookeeper.ssl.hostnameVerification", "false");
 
     System.setProperty("jute.maxbuffer", String.valueOf(JUTE_MAXBUFFER));
 
@@ -141,7 +153,7 @@ public class TestSecureZKCuratorManager {
     }
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testSecureZKConfiguration() throws Exception {
     LOG.info("Entered to the testSecureZKConfiguration test case.");
     // Validate that HadoopZooKeeperFactory will set ZKConfig with given principals
@@ -176,7 +188,7 @@ public class TestSecureZKCuratorManager {
         zk.getClientConfig().getProperty(ZKClientConfig.ZOOKEEPER_CLIENT_CNXN_SOCKET));
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testTruststoreKeystoreConfiguration() {
     LOG.info("Entered to the testTruststoreKeystoreConfiguration test case.");
     /*
