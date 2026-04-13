@@ -82,7 +82,7 @@ public class TestVaultHttpClient {
           sendResponse(exchange, 200, response);
         });
 
-    String value = client.readSecret("secret/data/hadoop/db.password");
+    String value = client.readSecret("secret/data/hadoop/db.password", "value");
     assertEquals("p@ssw0rd", value);
   }
 
@@ -94,7 +94,7 @@ public class TestVaultHttpClient {
           sendResponse(exchange, 404, "");
         });
 
-    String value = client.readSecret("secret/data/hadoop/missing");
+    String value = client.readSecret("secret/data/hadoop/missing", "value");
     assertNull(value);
   }
 
@@ -114,7 +114,7 @@ public class TestVaultHttpClient {
               "{\"data\":{\"version\":1}}");
         });
 
-    client.writeSecret("secret/data/hadoop/new.key", "secret123");
+    client.writeSecret("secret/data/hadoop/new.key", "value", "secret123");
     assertTrue("Write handler should have been called", called[0]);
   }
 
@@ -190,7 +190,7 @@ public class TestVaultHttpClient {
 
     VaultHttpClient reauthClient =
         new VaultHttpClient(connInfo, auth, 5000, 5000, 2, 100);
-    String value = reauthClient.readSecret("secret/data/hadoop/auth.test");
+    String value = reauthClient.readSecret("secret/data/hadoop/auth.test", "value");
     assertEquals("secret", value);
     assertTrue("Should have retried after 403", callCount.get() >= 2);
   }
@@ -206,7 +206,7 @@ public class TestVaultHttpClient {
               "{\"data\":{\"data\":{\"value\":\"ok\"}}}");
         });
 
-    String value = client.readSecret("secret/data/hadoop/check.token");
+    String value = client.readSecret("secret/data/hadoop/check.token", "value");
     assertEquals("ok", value);
   }
 
@@ -218,7 +218,7 @@ public class TestVaultHttpClient {
         });
 
     try {
-      client.readSecret("secret/data/hadoop/error.key");
+      client.readSecret("secret/data/hadoop/error.key", "value");
       fail("should throw IOException");
     } catch (IOException e) {
       assertTrue(e.getMessage().contains("500"));
@@ -228,6 +228,39 @@ public class TestVaultHttpClient {
   private void assertTokenHeader(HttpExchange exchange) {
     String token = exchange.getRequestHeaders().getFirst("X-Vault-Token");
     assertNotNull("X-Vault-Token header must be present", token);
+  }
+
+  @Test
+  public void testReadMultipleKeysFromSamePath() throws Exception {
+    server.createContext("/v1/secret/data/hadoop/db",
+        exchange -> {
+          assertTokenHeader(exchange);
+          String response =
+              "{\"data\":{\"data\":"
+              + "{\"password\":\"s3cret\",\"username\":\"admin\"}}}";
+          sendResponse(exchange, 200, response);
+        });
+
+    assertEquals("s3cret",
+        client.readSecret("secret/data/hadoop/db", "password"));
+    assertEquals("admin",
+        client.readSecret("secret/data/hadoop/db", "username"));
+  }
+
+  @Test
+  public void testWriteCustomKey() throws Exception {
+    final String[] capturedBody = {null};
+    server.createContext("/v1/secret/data/hadoop/db",
+        exchange -> {
+          assertTokenHeader(exchange);
+          capturedBody[0] = new String(
+              IOUtils.toByteArray(exchange.getRequestBody()),
+              StandardCharsets.UTF_8);
+          sendResponse(exchange, 200, "{\"data\":{\"version\":1}}");
+        });
+
+    client.writeSecret("secret/data/hadoop/db", "password", "new_pass");
+    assertTrue(capturedBody[0].contains("\"password\":\"new_pass\""));
   }
 
   private void sendResponse(HttpExchange exchange, int statusCode,

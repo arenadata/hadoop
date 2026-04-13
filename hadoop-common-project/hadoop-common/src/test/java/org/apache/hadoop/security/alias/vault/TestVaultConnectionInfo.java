@@ -162,4 +162,41 @@ public class TestVaultConnectionInfo {
     assertEquals("secret", info.getMount());
     assertEquals("hadoop", info.getBasePath());
   }
+
+  @Test
+  public void testDefaultSecretKey() throws Exception {
+    URI uri = new URI("vault://https@vault.example.com:8200/secret/hadoop");
+    VaultConnectionInfo info = new VaultConnectionInfo(uri);
+
+    assertEquals("value", info.getSecretKey());
+  }
+
+  @Test
+  public void testCustomSecretKey() throws Exception {
+    URI uri = new URI(
+        "vault://https@vault.example.com:8200/secret/hadoop?key=password");
+    VaultConnectionInfo info = new VaultConnectionInfo(uri);
+
+    assertEquals("password", info.getSecretKey());
+    assertEquals("secret", info.getMount());
+    assertEquals("hadoop", info.getBasePath());
+  }
+
+  @Test
+  public void testEmptyKeyDefaultsToValue() throws Exception {
+    URI uri = new URI(
+        "vault://https@vault.example.com:8200/secret/hadoop?key=");
+    VaultConnectionInfo info = new VaultConnectionInfo(uri);
+
+    assertEquals("value", info.getSecretKey());
+  }
+
+  @Test
+  public void testKeyWithOtherParams() throws Exception {
+    URI uri = new URI(
+        "vault://https@vault.example.com:8200/secret/hadoop?foo=bar&key=secret");
+    VaultConnectionInfo info = new VaultConnectionInfo(uri);
+
+    assertEquals("secret", info.getSecretKey());
+  }
 }
