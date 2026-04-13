@@ -23,7 +23,7 @@
   <parent>
     <artifactId>hadoop-yarn-applications-catalog</artifactId>
     <groupId>org.apache.hadoop</groupId>
-    <version>3.4.3</version>
+    <version>3.4.3.1-4.3.0-0</version>
   </parent>
 
   <name>Apache Hadoop YARN Application Catalog Webapp</name>
@@ -154,6 +154,10 @@
                 <exclusion>
                     <groupId>org.eclipse.jetty</groupId>
                     <artifactId>jetty-io</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>

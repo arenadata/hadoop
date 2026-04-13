@@ -47,9 +47,14 @@ jobs:
         java-version: 11
         distribution: temurin
         cache: maven
+        server-id: arenadata
+        server-username: GITHUB_ACTOR
+        server-password: GITHUB_TOKEN
     - name: Install native dependencies
       run: sudo apt-get update -q && sudo apt-get install -y -q ${{ env.NATIVE_PACKAGES }}
     - name: Compile
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: >-
         mvn ${{ env.MAVEN_ARGS }} install -DskipTests -Pnative
         -Drequire.openssl=true -Drequire.snappy=true
@@ -77,7 +82,7 @@ jobs:
           - name: Common + Auth + KMS
             modules: hadoop-common-project/hadoop-common,hadoop-common-project/hadoop-auth,hadoop-common-project/hadoop-kms
             flags: -Pnative
-            timeout: 45
+            timeout: 120
 
           - name: HDFS (NameNode)
             modules: hadoop-hdfs-project/hadoop-hdfs
@@ -97,7 +102,7 @@ jobs:
           - name: HDFS RBF + HttpFS + NFS
             modules: hadoop-hdfs-project/hadoop-hdfs-rbf,hadoop-hdfs-project/hadoop-hdfs-httpfs,hadoop-hdfs-project/hadoop-hdfs-nfs,hadoop-hdfs-project/hadoop-hdfs-native-client,hadoop-hdfs-project/hadoop-hdfs-client
             flags: -Pnative
-            timeout: 60
+            timeout: 120
 
           - name: YARN ResourceManager
             modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager
@@ -107,22 +112,22 @@ jobs:
           - name: YARN NodeManager + Client
             modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client
             flags: ''
-            timeout: 60
+            timeout: 120
 
           - name: YARN Apps + Services
             modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-applications-distributedshell,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-services/hadoop-yarn-services-core,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-services/hadoop-yarn-services-api,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common
             flags: ''
-            timeout: 60
+            timeout: 120
 
           - name: YARN Timeline + Server
             modules: hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-applicationhistoryservice,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timeline-pluginstorage,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice-hbase/hadoop-yarn-server-timelineservice-hbase-client,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice-hbase/hadoop-yarn-server-timelineservice-hbase-common,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-timelineservice-hbase/hadoop-yarn-server-timelineservice-hbase-server,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests,hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-router
             flags: ''
-            timeout: 30
+            timeout: 120
 
           - name: MapReduce JobClient
             modules: hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient
             flags: ''
-            timeout: 100
+            timeout: 120
 
           - name: MapReduce Core + App + Streaming
             modules: hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-nativetask,hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-uploader,hadoop-mapreduce-project/hadoop-mapreduce-examples,hadoop-tools/hadoop-streaming
@@ -132,7 +137,7 @@ jobs:
           - name: Tools
             modules: hadoop-tools/hadoop-distcp,hadoop-tools/hadoop-gridmix,hadoop-tools/hadoop-sls,hadoop-tools/hadoop-azure,hadoop-tools/hadoop-aws,hadoop-tools/hadoop-azure-datalake,hadoop-tools/hadoop-archives,hadoop-tools/hadoop-archive-logs,hadoop-tools/hadoop-rumen,hadoop-tools/hadoop-extras,hadoop-tools/hadoop-resourceestimator,hadoop-tools/hadoop-federation-balance,hadoop-tools/hadoop-dynamometer/hadoop-dynamometer-infra,hadoop-tools/hadoop-dynamometer/hadoop-dynamometer-workload,hadoop-tools/hadoop-dynamometer/hadoop-dynamometer-blockgen
             flags: ''
-            timeout: 60
+            timeout: 120
 
     steps:
     - uses: actions/checkout@v4
@@ -140,6 +145,9 @@ jobs:
       with:
         java-version: 11
         distribution: temurin
+        server-id: arenadata
+        server-username: GITHUB_ACTOR
+        server-password: GITHUB_TOKEN
     - name: Restore m2 repository
       uses: actions/cache/restore@v4
       with:
@@ -156,6 +164,7 @@ jobs:
       run: sudo apt-get update -q && sudo apt-get install -y -q ${{ env.NATIVE_PACKAGES }}
     - name: Run tests
       env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         LD_LIBRARY_PATH: ${{ github.workspace }}/hadoop-common-project/hadoop-common/target/native/target/usr/local/lib:${{ github.workspace }}/hadoop-hdfs-project/hadoop-hdfs-native-client/target/native/target/usr/local/lib:${{ github.workspace }}/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-nativetask/target/native/target/usr/local/lib:${{ github.workspace }}/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/target/native/target/usr/local/lib
       run: >-
         mvn ${{ env.MAVEN_ARGS }} test

@@ -102,6 +102,7 @@ public class TestJettyHelper implements MethodRule {
       http_config.addCustomizer(new SecureRequestCustomizer());
       ConnectionFactory connFactory = new HttpConnectionFactory(http_config);
       conn.addConnectionFactory(connFactory);
+      conn.setReuseAddress(true);
       conn.setHost(host);
       conn.setPort(port);
       if (ssl) {
