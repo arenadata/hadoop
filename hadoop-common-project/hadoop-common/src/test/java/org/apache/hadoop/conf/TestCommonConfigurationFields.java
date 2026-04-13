@@ -32,6 +32,7 @@ import org.apache.hadoop.security.CompositeGroupsMapping;
 import org.apache.hadoop.security.HttpCrossOriginFilterInitializer;
 import org.apache.hadoop.security.LdapGroupsMapping;
 import org.apache.hadoop.security.RuleBasedLdapGroupsMapping;
+import org.apache.hadoop.security.alias.vault.VaultCredentialProviderConfig;
 import org.apache.hadoop.security.ssl.SSLFactory;
 
 /**
@@ -72,7 +73,8 @@ public class TestCommonConfigurationFields extends TestConfigurationFieldsBase {
         SSLFactory.class,
         CompositeGroupsMapping.class,
         CodecUtil.class,
-        RuleBasedLdapGroupsMapping.class
+        RuleBasedLdapGroupsMapping.class,
+        VaultCredentialProviderConfig.class
         };
 
     // Initialize used variables
