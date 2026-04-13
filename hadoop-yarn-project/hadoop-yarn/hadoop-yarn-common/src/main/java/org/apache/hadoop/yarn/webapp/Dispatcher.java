@@ -21,6 +21,8 @@ package org.apache.hadoop.yarn.webapp;
 import static org.apache.hadoop.util.Preconditions.checkState;
 
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -141,7 +143,14 @@ public class Dispatcher extends HttpServlet {
         rc.setStatus(Integer.parseInt(rc.cookies().
             get(STATUS_COOKIE).getValue()));
         removeErrorCookies(res, uri);
-        rc.set(Params.ERROR_DETAILS, ec.getValue());
+        // URL-decode the error cookie value (was encoded for RFC6265 compliance)
+        String errorDetails;
+        try {
+          errorDetails = URLDecoder.decode(ec.getValue(), "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e1) {
+          errorDetails = ec.getValue(); // fallback to raw value
+        }
+        rc.set(Params.ERROR_DETAILS, errorDetails);
         render(ErrorPage.class);
         return;
       }
@@ -187,11 +196,18 @@ public class Dispatcher extends HttpServlet {
                                          String path, boolean devMode) {
     String st = devMode ? ErrorPage.toStackTrace(e, 1024 * 3) // spec: min 4KB
                         : "See logs for stack trace";
+    // URL-encode to comply with RFC6265 (no spaces allowed in cookie values)
+    String encodedSt;
+    try {
+      encodedSt = URLEncoder.encode(st, "UTF-8");
+    } catch (java.io.UnsupportedEncodingException e1) {
+      encodedSt = st; // fallback to raw value (will fail on Jetty)
+    }
     res.setStatus(res.SC_FOUND);
     Cookie cookie = createCookie(STATUS_COOKIE, String.valueOf(500));
     cookie.setPath(path);
     res.addCookie(cookie);
-    cookie = createCookie(ERROR_COOKIE, st);
+    cookie = createCookie(ERROR_COOKIE, encodedSt);
     cookie.setPath(path);
     res.addCookie(cookie);
     res.setHeader("Location", path);
