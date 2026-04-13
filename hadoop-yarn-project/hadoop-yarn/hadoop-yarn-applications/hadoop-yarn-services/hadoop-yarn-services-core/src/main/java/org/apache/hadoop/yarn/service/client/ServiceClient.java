@@ -1452,6 +1452,32 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
           }
         }
       }
+      // YARN-10311: additionally acquire delegation tokens for every
+      // configured nameservice so services running in federated environments
+      // can localize resources from subclusters other than the default FS.
+      Configuration conf = getConfig();
+      String[] nameServices = conf.getStrings(DFSConfigKeys.DFS_NAMESERVICES);
+      if (nameServices != null && nameServices.length > 0) {
+        LOG.debug("adding delegation tokens for nameservices: {}",
+            Arrays.toString(nameServices));
+        for (String nameService : nameServices) {
+          Path nsPath = new Path("hdfs://" + nameService + "/");
+          try {
+            FileSystem nsFs = nsPath.getFileSystem(conf);
+            org.apache.hadoop.security.token.Token<?>[] nsTokens =
+                nsFs.addDelegationTokens(tokenRenewer, allCreds);
+            if (LOG.isDebugEnabled() && nsTokens != null
+                && nsTokens.length != 0) {
+              for (Token<?> token : nsTokens) {
+                LOG.debug("Got DT for {}: {}", nameService, token);
+              }
+            }
+          } catch (IOException e) {
+            LOG.warn("Failed to get delegation token for nameservice "
+                + nameService + ": " + e.getMessage());
+          }
+        }
+      }
     }
 
     if (!StringUtils.isEmpty(app.getDockerClientConfig())) {
