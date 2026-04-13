@@ -272,7 +272,7 @@ public class VaultCredentialProvider extends CredentialProvider {
   }
 
   private String buildCacheKey(String path) {
-    return connInfo.getBaseUrl() + "|" + path;
+    return connInfo.getBaseUrl() + "|" + path + "|" + connInfo.getSecretKey();
   }
 
   /**
