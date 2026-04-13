@@ -15,38 +15,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.hadoop.hdfs.protocol.datatransfer.sasl;
+
+package org.apache.hadoop.security.alias.vault;
 
 import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 
 /**
- * Creates a new {@link DataEncryptionKey} on demand.
+ * Interface for Vault authentication methods.
  */
 @InterfaceAudience.Private
-public interface DataEncryptionKeyFactory {
+public interface VaultAuthMethod {
 
   /**
-   * Creates a new DataEncryptionKey.
+   * Authenticate to Vault and return a client token.
    *
-   * @return DataEncryptionKey newly created
-   * @throws IOException for any error
+   * @param client the HTTP client to use for authentication requests
+   * @return the Vault client token
+   * @throws IOException if authentication fails
    */
-  DataEncryptionKey newDataEncryptionKey() throws IOException;
-
-  /**
-   * Creates a new DataEncryptionKey for a specific block pool.
-   * In federated setups with Router, different block pools belong to different
-   * namespaces and require different encryption keys.
-   *
-   * @param blockPoolId the block pool identifier to get the key for
-   * @return DataEncryptionKey for the specified block pool
-   * @throws IOException for any error
-   */
-  default DataEncryptionKey newDataEncryptionKey(String blockPoolId)
-      throws IOException {
-    return newDataEncryptionKey();
-  }
+  String authenticate(VaultHttpClient client) throws IOException;
 }

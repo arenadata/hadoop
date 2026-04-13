@@ -34,7 +34,8 @@ import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
 
 import org.apache.hadoop.classification.VisibleForTesting;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * A delegation token identifier that is specific to HDFS.
  */
@@ -43,6 +44,9 @@ public class DelegationTokenIdentifier
     extends AbstractDelegationTokenIdentifier {
   public static final Text HDFS_DELEGATION_KIND =
       new Text("HDFS_DELEGATION_TOKEN");
+
+  private static final Logger LOG = LoggerFactory
+          .getLogger(DelegationTokenIdentifier.class);
 
   @SuppressWarnings("unchecked")
   private static Map<TokenIdentifier, UserGroupInformation> ugiCache =
@@ -87,8 +91,16 @@ public class DelegationTokenIdentifier
   @Override
   public String toString() {
     StringBuilder sbld = new StringBuilder();
+    String username = "Unknown";
+    try {
+      username = getUser().getShortUserName();
+    }
+    catch (Exception ex) {
+      LOG.warn("Failed to extract username", ex);
+    }
+
     sbld
-        .append("token for ").append(getUser().getShortUserName())
+        .append("token for ").append(username)
         .append(": ").append(super.toString());
     return sbld.toString();
   }

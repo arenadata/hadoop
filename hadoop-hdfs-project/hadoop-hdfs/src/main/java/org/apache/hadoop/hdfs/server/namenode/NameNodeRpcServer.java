@@ -540,11 +540,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         AclException.class,
         FSLimitException.PathComponentTooLongException.class,
         FSLimitException.MaxDirectoryItemsExceededException.class,
-        DisallowedDatanodeException.class,
-        XAttrNotFoundException.class);
+        DisallowedDatanodeException.class);
 
     clientRpcServer.addSuppressedLoggingExceptions(StandbyException.class,
-        UnresolvedPathException.class);
+        UnresolvedPathException.class,
+        XAttrNotFoundException.class);
 
     clientRpcServer.setTracer(nn.tracer);
     if (serviceRpcServer != null) {
@@ -1926,6 +1926,13 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public DataEncryptionKey getDataEncryptionKey() throws IOException {
     checkNNStartup();
     return namesystem.getBlockManager().generateDataEncryptionKey();
+  }
+
+  @Override
+  public DataEncryptionKey getDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    // Regular NameNode has only one block pool, ignore the parameter.
+    return getDataEncryptionKey();
   }
 
   @Override

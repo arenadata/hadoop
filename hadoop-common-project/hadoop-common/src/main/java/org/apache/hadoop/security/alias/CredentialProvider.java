@@ -78,6 +78,17 @@ public abstract class CredentialProvider {
   }
 
   /**
+   * Create a new CredentialEntry
+   * @param alias the alias name
+   * @param credential the credential value
+   * @return a new CredentialEntry
+   */
+  protected CredentialEntry newCredentialEntry(String alias,
+      char[] credential) {
+    return new CredentialEntry(alias, credential);
+  }
+
+  /**
    * Indicates whether this provider represents a store
    * that is intended for transient use - such as the UserProvider
    * is. These providers are generally used to provide job access to

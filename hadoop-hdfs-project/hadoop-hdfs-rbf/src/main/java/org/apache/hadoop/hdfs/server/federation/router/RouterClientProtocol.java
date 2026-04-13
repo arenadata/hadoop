@@ -1786,8 +1786,24 @@ public class RouterClientProtocol implements ClientProtocol {
 
   @Override
   public DataEncryptionKey getDataEncryptionKey() throws IOException {
-    rpcServer.checkOperation(NameNode.OperationCategory.READ, false);
-    return null;
+    return getDataEncryptionKey(null);
+  }
+
+  @Override
+  public DataEncryptionKey getDataEncryptionKey(String blockPoolId)
+      throws IOException {
+    rpcServer.checkOperation(NameNode.OperationCategory.READ);
+    RemoteMethod method = new RemoteMethod("getDataEncryptionKey");
+
+    if (blockPoolId != null && !blockPoolId.isEmpty()) {
+      LOG.debug("Routing getDataEncryptionKey to namespace for block pool {}",
+          blockPoolId);
+      return (DataEncryptionKey) rpcClient.invokeSingleBlockPool(
+          blockPoolId, method);
+    }
+
+    String ns = subclusterResolver.getDefaultNamespace();
+    return (DataEncryptionKey) rpcClient.invokeSingle(ns, method);
   }
 
   @Override
