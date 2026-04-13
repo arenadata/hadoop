@@ -58,14 +58,16 @@ public class KerberosVaultAuth implements VaultAuthMethod {
       LoggerFactory.getLogger(KerberosVaultAuth.class);
 
   private static final Oid SPNEGO_OID;
+  private static final Oid KRB5_PRINCIPAL_NAME_OID;
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
 
   static {
     try {
       SPNEGO_OID = new Oid("1.3.6.1.5.5.2");
+      KRB5_PRINCIPAL_NAME_OID = new Oid("1.2.840.113554.1.2.2.1");
     } catch (GSSException e) {
-      throw new RuntimeException("Failed to create SPNEGO OID", e);
+      throw new RuntimeException("Failed to create GSS OID", e);
     }
   }
 
@@ -154,8 +156,12 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   private String generateSpnegoToken() throws IOException {
     try {
       GSSManager gssManager = GSSManager.getInstance();
+      Oid nameType = servicePrincipal.contains("/")
+          ? KRB5_PRINCIPAL_NAME_OID : GSSName.NT_HOSTBASED_SERVICE;
+      LOG.debug("Creating GSS name for '{}' with name type OID {}",
+          servicePrincipal, nameType);
       GSSName serverName = gssManager.createName(
-          servicePrincipal, GSSName.NT_HOSTBASED_SERVICE);
+          servicePrincipal, nameType);
       GSSContext gssContext = gssManager.createContext(
           serverName, SPNEGO_OID, null, GSSContext.DEFAULT_LIFETIME);
       gssContext.requestMutualAuth(true);
