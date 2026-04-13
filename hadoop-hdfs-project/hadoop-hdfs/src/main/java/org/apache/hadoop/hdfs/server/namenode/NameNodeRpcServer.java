@@ -540,11 +540,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         AclException.class,
         FSLimitException.PathComponentTooLongException.class,
         FSLimitException.MaxDirectoryItemsExceededException.class,
-        DisallowedDatanodeException.class,
-        XAttrNotFoundException.class);
+        DisallowedDatanodeException.class);
 
     clientRpcServer.addSuppressedLoggingExceptions(StandbyException.class,
-        UnresolvedPathException.class);
+        UnresolvedPathException.class,
+        XAttrNotFoundException.class);
 
     clientRpcServer.setTracer(nn.tracer);
     if (serviceRpcServer != null) {
