@@ -19,6 +19,7 @@
 package org.apache.hadoop.fs.s3a.impl;
 
 import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
 
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -42,5 +43,16 @@ public class ConfigureShadedAWSSocketFactory implements
     httpClientBuilder.socketFactory(new SSLConnectionSocketFactory(
         DelegatingSSLSocketFactory.getDefaultFactory(),
         (HostnameVerifier) null));
+  }
+
+  @Override
+  public void configureSocketFactory(final ApacheHttpClient.Builder httpClientBuilder,
+                                     final DelegatingSSLSocketFactory.SSLChannelMode channelMode,
+                                     final TrustManagerFactory tmf)
+          throws IOException {
+    DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode, tmf);
+    httpClientBuilder.socketFactory(new SSLConnectionSocketFactory(
+            DelegatingSSLSocketFactory.getDefaultFactory(),
+            (HostnameVerifier) null));
   }
 }
