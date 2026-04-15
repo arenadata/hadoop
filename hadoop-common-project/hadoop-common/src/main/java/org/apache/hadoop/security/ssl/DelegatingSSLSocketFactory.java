@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.security.KeyManagementException;
+import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.logging.Level;
@@ -29,6 +30,7 @@ import java.util.logging.Level;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
 
 import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
@@ -98,13 +100,25 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
    * Initialize a singleton SSL socket factory.
    *
    * @param preferredMode applicable only if the instance is not initialized.
+   * @param tmf applicable only if the instance is not initialized.
    * @throws IOException if an error occurs.
    */
   public static synchronized void initializeDefaultFactory(
-      SSLChannelMode preferredMode) throws IOException {
+      SSLChannelMode preferredMode, TrustManagerFactory tmf) throws IOException {
     if (instance == null) {
-      instance = new DelegatingSSLSocketFactory(preferredMode);
+      instance = new DelegatingSSLSocketFactory(preferredMode, tmf);
     }
+  }
+
+  /**
+   * Initialize a singleton SSL socket factory.
+   *
+   * @param preferredMode applicable only if the instance is not initialized.
+   * @throws IOException if an error occurs.
+   */
+  public static synchronized void initializeDefaultFactory(
+          SSLChannelMode preferredMode) throws IOException {
+    initializeDefaultFactory(preferredMode, null);
   }
 
   /**
@@ -131,9 +145,18 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
 
   private DelegatingSSLSocketFactory(SSLChannelMode preferredChannelMode)
       throws IOException {
+    this(preferredChannelMode, null);
+  }
+
+  private DelegatingSSLSocketFactory(SSLChannelMode preferredChannelMode, TrustManagerFactory tmf)
+          throws IOException {
     try {
-      initializeSSLContext(preferredChannelMode);
-    } catch (NoSuchAlgorithmException | KeyManagementException e) {
+      if (tmf != null) {
+        initializeSSLContextWithTrustManager(preferredChannelMode, tmf);
+      } else {
+        initializeSSLContext(preferredChannelMode);
+      }
+    } catch (NoSuchAlgorithmException | KeyManagementException | KeyStoreException e) {
       throw new IOException(e);
     }
 
@@ -158,6 +181,7 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
     case Default:
       try {
         bindToOpenSSLProvider();
+        ctx.init(null, null, null);
         channelMode = SSLChannelMode.OpenSSL;
       } catch (LinkageError | NoSuchAlgorithmException | RuntimeException e) {
         LOG.debug("Failed to load OpenSSL. Falling back to the JSSE default.",
@@ -168,6 +192,7 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
       break;
     case OpenSSL:
       bindToOpenSSLProvider();
+      ctx.init(null, null, null);
       channelMode = SSLChannelMode.OpenSSL;
       break;
     case Default_JSSE:
@@ -181,6 +206,45 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
     default:
       throw new IOException("Unknown channel mode: "
           + preferredChannelMode);
+    }
+  }
+
+  private void initializeSSLContextWithTrustManager(SSLChannelMode preferredChannelMode, TrustManagerFactory tmf)
+          throws NoSuchAlgorithmException, KeyManagementException, IOException, KeyStoreException {
+    LOG.debug("Initializing SSL Context to channel mode {} with TrustManagerFactory",
+            preferredChannelMode);
+    switch (preferredChannelMode) {
+      case Default:
+        try {
+          bindToOpenSSLProvider();
+          ctx.init(null, tmf.getTrustManagers(), null);
+          channelMode = SSLChannelMode.OpenSSL;
+        } catch (LinkageError | NoSuchAlgorithmException | RuntimeException e) {
+          LOG.debug("Failed to load OpenSSL. Falling back to the JSSE default.",
+                  e);
+          ctx = SSLContext.getInstance("TLS");
+          ctx.init(null, tmf.getTrustManagers(), null);
+          channelMode = SSLChannelMode.Default_JSSE;
+        }
+        break;
+      case OpenSSL:
+        bindToOpenSSLProvider();
+        ctx.init(null, tmf.getTrustManagers(), null);
+        channelMode = SSLChannelMode.OpenSSL;
+        break;
+      case Default_JSSE:
+        ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, tmf.getTrustManagers(), null);
+        channelMode = SSLChannelMode.Default_JSSE;
+        break;
+      case Default_JSSE_with_GCM:
+        ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, tmf.getTrustManagers(), null);
+        channelMode = SSLChannelMode.Default_JSSE_with_GCM;
+        break;
+      default:
+        throw new IOException("Unknown channel mode: "
+                + preferredChannelMode);
     }
   }
 
@@ -205,7 +269,6 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
     try {
       logger.setLevel(Level.WARNING);
       ctx = SSLContext.getInstance("openssl.TLS");
-      ctx.init(null, null, null);
     } finally {
       logger.setLevel(originalLevel);
     }

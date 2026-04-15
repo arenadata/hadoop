@@ -18,11 +18,19 @@
 
 package org.apache.hadoop.fs.s3a.impl;
 
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
+import java.util.List;
 
+import org.apache.hadoop.security.alias.CredentialProvider;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -31,10 +39,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.ssl.DelegatingSSLSocketFactory;
 
-import static org.apache.hadoop.fs.s3a.Constants.DEFAULT_ENDPOINT;
-import static org.apache.hadoop.fs.s3a.Constants.DEFAULT_SSL_CHANNEL_MODE;
-import static org.apache.hadoop.fs.s3a.Constants.ENDPOINT;
-import static org.apache.hadoop.fs.s3a.Constants.SSL_CHANNEL_MODE;
+import javax.net.ssl.TrustManagerFactory;
+
+import static org.apache.hadoop.fs.s3a.Constants.*;
 
 /**
  * Configures network settings when communicating with AWS services.
@@ -46,6 +53,30 @@ public final class NetworkBinding {
   private static final String BINDING_CLASSNAME = "org.apache.hadoop.fs.s3a.impl.ConfigureShadedAWSSocketFactory";
 
   private NetworkBinding() {
+  }
+
+  private static char[] getTruststorePassword(Configuration conf) throws IOException {
+    String trustStorePassword = conf.get(SSL_TRUSTSTORE_PASSWORD);
+    if (trustStorePassword != null) {
+      return trustStorePassword.toCharArray();
+    }
+    String trustStoreCredentialFile = conf.get(SSL_TRUSTSTORE_CREDENTIAL_FILE);
+    if (trustStoreCredentialFile != null) {
+      Configuration confProvider = new Configuration();
+      confProvider.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH, trustStoreCredentialFile);
+      List<CredentialProvider> providers = CredentialProviderFactory.getProviders(confProvider);
+      for (CredentialProvider provider: providers) {
+        try {
+          CredentialProvider.CredentialEntry credEntry = provider.getCredentialEntry(SSL_TRUSTSTORE_CREDENTIAL_ALIAS);
+          if (credEntry != null && credEntry.getCredential() != null) {
+            return credEntry.getCredential();
+          }
+        } catch (Exception ie) {
+          LOG.error("Unable to get the Credential Provider from the Configuration", ie);
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -78,7 +109,27 @@ public final class NetworkBinding {
               " is not a valid value for " + SSL_CHANNEL_MODE);
     }
 
-    DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode);
+    TrustManagerFactory tmf = null;
+
+    if (conf.get(SSL_TRUSTSTORE) != null) {
+      String trustStorePath = conf.get(SSL_TRUSTSTORE);
+      char[] trustStorePassword = getTruststorePassword(conf);
+      try {
+        KeyStore trustStore = KeyStore.getInstance(conf.get(SSL_TRUSTSTORE_TYPE, SSL_TRUSTSTORE_TYPE_DEFAULT));
+
+        try (FileInputStream instream = new FileInputStream(trustStorePath)) {
+          trustStore.load(instream, trustStorePassword);
+        }
+
+        tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(trustStore);
+      } catch (KeyStoreException | CertificateException | NoSuchAlgorithmException e) {
+        throw new IOException(e);
+      }
+      DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode, tmf);
+    }else {
+      DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode);
+    }
     try {
       // use reflection to load in our own binding class.
       // this is *probably* overkill, but it is how we can be fully confident
@@ -86,9 +137,15 @@ public final class NetworkBinding {
       // within this try/catch block
       Class<? extends ConfigureAWSSocketFactory> clazz =
           (Class<? extends ConfigureAWSSocketFactory>) Class.forName(BINDING_CLASSNAME);
-      clazz.getConstructor()
-          .newInstance()
-          .configureSocketFactory(httpClientBuilder, channelMode);
+      if (tmf != null) {
+        clazz.getConstructor()
+                .newInstance()
+                .configureSocketFactory(httpClientBuilder, channelMode, tmf);
+      } else {
+        clazz.getConstructor()
+                .newInstance()
+                .configureSocketFactory(httpClientBuilder, channelMode);
+      }
     } catch (ClassNotFoundException | NoSuchMethodException |
             IllegalAccessException | InstantiationException |
             InvocationTargetException | LinkageError  e) {
@@ -113,9 +170,14 @@ public final class NetworkBinding {
    * works with the shaded AWS libraries to exist in their own class.
    */
   interface ConfigureAWSSocketFactory {
+
     void configureSocketFactory(ApacheHttpClient.Builder httpClientBuilder,
         DelegatingSSLSocketFactory.SSLChannelMode channelMode)
         throws IOException;
+    void configureSocketFactory(ApacheHttpClient.Builder httpClientBuilder,
+                                DelegatingSSLSocketFactory.SSLChannelMode channelMode,
+                                final TrustManagerFactory tmf)
+            throws IOException;
   }
 
   /**

@@ -231,6 +231,13 @@ public final class Constants {
       DEFAULT_SSL_CHANNEL_MODE =
           DelegatingSSLSocketFactory.SSLChannelMode.Default_JSSE;
 
+  public static final String SSL_TRUSTSTORE = "fs.s3a.ssl.truststore";
+  public static final String SSL_TRUSTSTORE_PASSWORD = "fs.s3a.ssl.truststore.password";
+  public static final String SSL_TRUSTSTORE_CREDENTIAL_FILE = "fs.s3a.ssl.truststore.credential.file";
+  public static final String SSL_TRUSTSTORE_CREDENTIAL_ALIAS = "sslTrustStore";
+  public static final String SSL_TRUSTSTORE_TYPE = "fs.s3a.ssl.truststore.type";
+  public static final String SSL_TRUSTSTORE_TYPE_DEFAULT = "jks";
+
   /**
    * Endpoint. For v4 signing and/or better performance,
    * this should be the specific endpoint of the region
