@@ -99,6 +99,18 @@
       <artifactId>jsr305</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- jackson-module-jaxb-annotations (bundled and relocated by shade) references
+         javax.xml.bind.* annotations. javax.xml.bind:jaxb-api is excluded above, and
+         JDK 11+ removed it. Bundle jaxb-runtime so its transitive jakarta-xml-bind-api
+         2.3.x (which still ships classes under the javax.xml.bind package) is shaded
+         into this jar, satisfying the relocated references. Optional so downstream
+         consumers don't pick up the (already-bundled) transitives. -->
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <scope>runtime</scope>
+      <optional>true</optional>
+    </dependency>
     <!-- Move log4j to optional, since it is needed for some pieces folks might not use:
          * one of the three custom log4j appenders we have
       -->
