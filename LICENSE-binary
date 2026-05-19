@@ -525,6 +525,13 @@ javax.ws.rs:jsr311-api:1.1.1
 javax.xml.bind:jaxb-api:2.2.11
 
 
+Eclipse Distribution License (EDL) 1.0
+--------------------------
+
+jakarta.xml.bind:jakarta.xml.bind-api:2.3.3
+org.glassfish.jaxb:jaxb-runtime:2.3.9
+
+
 Eclipse Public License 1.0
 --------------------------
 
