@@ -3333,7 +3333,7 @@ static jthrowable hadoopRzOptionsGetEnumSet(JNIEnv *env,
         }
         enumSetObj = jVal.l;
     } else {
-        jclass clazz = (*env)->FindClass(env, HADOOP_RO);
+        jclass clazz = globalFindClass(env, HADOOP_RO);
         if (!clazz) {
             jthr = getPendingExceptionAndClear(env);
             goto done;

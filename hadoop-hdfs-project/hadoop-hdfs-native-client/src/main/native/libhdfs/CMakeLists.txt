@@ -61,6 +61,13 @@ build_libhdfs_test(test_libhdfs_ops hdfs_static test_libhdfs_ops.c)
 link_libhdfs_test(test_libhdfs_ops hdfs_static native_mini_dfs ${JAVA_JVM_LIBRARY})
 add_libhdfs_test(test_libhdfs_ops hdfs_static)
 
+# Unix-only: the test uses setenv() to configure the loader env before creating the JVM.
+if (NOT WIN32)
+build_libhdfs_test(test_libhdfs_runtime_classloader hdfs_static test_libhdfs_runtime_classloader.c)
+link_libhdfs_test(test_libhdfs_runtime_classloader hdfs_static native_mini_dfs ${JAVA_JVM_LIBRARY})
+add_libhdfs_test(test_libhdfs_runtime_classloader hdfs_static)
+endif()
+
 build_libhdfs_test(test_libhdfs_threaded hdfs_static expect.c test_libhdfs_threaded.c ${OS_DIR}/thread.c)
 link_libhdfs_test(test_libhdfs_threaded hdfs_static native_mini_dfs)
 add_libhdfs_test(test_libhdfs_threaded hdfs_static)

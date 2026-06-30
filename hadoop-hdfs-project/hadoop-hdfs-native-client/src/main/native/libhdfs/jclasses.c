@@ -51,7 +51,9 @@ static jthrowable initCachedClass(JNIEnv *env, const char *className,
                                 "name");
     jthrowable jthr = NULL;
     jclass tempLocalClassRef;
-    tempLocalClassRef = (*env)->FindClass(env, className);
+    /* globalFindClass == FindClass unless the isolated runtime classloader is
+     * active (see jni_helper.c). */
+    tempLocalClassRef = globalFindClass(env, className);
     if (!tempLocalClassRef) {
         jthr = getPendingExceptionAndClear(env);
         goto done;
