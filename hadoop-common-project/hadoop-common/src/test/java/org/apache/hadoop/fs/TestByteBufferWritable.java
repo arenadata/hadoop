@@ -191,9 +191,11 @@ public class TestByteBufferWritable {
   private static final class RecordingOut extends OutputStream
       implements ByteBufferWritable, StreamCapabilities {
     final ByteArrayOutputStream got = new ByteArrayOutputStream();
+    int byteBufferWrites;
     @Override public void write(int b) { got.write(b); }
     @Override public void write(byte[] b, int off, int len) { got.write(b, off, len); }
     @Override public void write(ByteBuffer buf) {
+      byteBufferWrites++;
       while (buf.hasRemaining()) {
         got.write(buf.get());
       }
@@ -237,5 +239,39 @@ public class TestByteBufferWritable {
         new CryptoOutputStream(rec, codec, new byte[16], new byte[16])) {
       assertFalse(cos.hasCapability(StreamCapabilities.WRITEBYTEBUFFER));
     }
+  }
+
+  /**
+   * When the wrapped stream takes ByteBuffers, CryptoOutputStream forwards the
+   * direct ciphertext buffer; the result is byte-identical to the byte[] path
+   * (AES-CTR is deterministic for a given key/IV/offset).
+   */
+  private void assertForwardMatchesByteArray(CryptoCodec codec, byte[] key,
+      byte[] iv, byte[] plain, long streamOffset) throws IOException {
+    RecordingOut rec = new RecordingOut();
+    try (CryptoOutputStream cos =
+        new CryptoOutputStream(rec, codec, key, iv, streamOffset)) {
+      cos.write(plain, 0, plain.length);
+    }
+    ByteArrayOutputStream ba = new ByteArrayOutputStream();
+    try (CryptoOutputStream cos =
+        new CryptoOutputStream(ba, codec, key, iv, streamOffset)) {
+      cos.write(plain, 0, plain.length);
+    }
+    assertTrue("forward path should write ByteBuffers", rec.byteBufferWrites > 0);
+    assertArrayEquals("offset=" + streamOffset,
+        ba.toByteArray(), rec.got.toByteArray());
+  }
+
+  @Test
+  public void testCryptoOutputStreamForwardsDirectCiphertext() throws IOException {
+    CryptoCodec codec = CryptoCodec.getInstance(new Configuration());
+    byte[] key = new byte[16];
+    byte[] iv = new byte[16];
+    new Random(7).nextBytes(key);
+    new Random(11).nextBytes(iv);
+    byte[] plain = payload((1 << 20) + 7);  // spans many bufferSize chunks
+    assertForwardMatchesByteArray(codec, key, iv, plain, 0);
+    assertForwardMatchesByteArray(codec, key, iv, plain, 100); // padding>0 first block
   }
 }

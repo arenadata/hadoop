@@ -25,6 +25,7 @@ import java.security.GeneralSecurityException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.ByteBufferWritable;
 import org.apache.hadoop.fs.CanSetDropBehind;
 import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.fs.Syncable;
@@ -82,7 +83,8 @@ public class CryptoOutputStream extends FilterOutputStream implements
   private final byte[] initIV;
   private byte[] iv;
   private boolean closeOutputStream;
-  
+  private final boolean outSupportsByteBuffer;
+
   public CryptoOutputStream(OutputStream out, CryptoCodec codec, 
       int bufferSize, byte[] key, byte[] iv) throws IOException {
     this(out, codec, bufferSize, key, iv, 0);
@@ -109,6 +111,9 @@ public class CryptoOutputStream extends FilterOutputStream implements
     outBuffer = ByteBuffer.allocateDirect(this.bufferSize);
     this.streamOffset = streamOffset;
     this.closeOutputStream = closeOutputStream;
+    this.outSupportsByteBuffer = out instanceof ByteBufferWritable
+        && StoreImplementationUtils.hasCapability(
+            out, StreamCapabilities.WRITEBYTEBUFFER);
     try {
       encryptor = codec.createEncryptor();
     } catch (GeneralSecurityException e) {
@@ -195,15 +200,17 @@ public class CryptoOutputStream extends FilterOutputStream implements
       padding = 0;
     }
     final int len = outBuffer.remaining();
-    
-    /*
-     * If underlying stream supports {@link ByteBuffer} write in future, needs
-     * refine here. 
-     */
-    final byte[] tmp = getTmpBuf();
-    outBuffer.get(tmp, 0, len);
-    out.write(tmp, 0, len);
-    
+    if (outSupportsByteBuffer) {
+      // Hand the direct ciphertext buffer to the wrapped stream, which
+      // consumes all of it, instead of copying through a heap buffer.
+      ((ByteBufferWritable) out).write(outBuffer);
+      Preconditions.checkState(!outBuffer.hasRemaining(),
+          "wrapped stream did not consume the whole ciphertext buffer");
+    } else {
+      final byte[] tmp = getTmpBuf();
+      outBuffer.get(tmp, 0, len);
+      out.write(tmp, 0, len);
+    }
     streamOffset += len;
     if (encryptor.isContextReset()) {
       /*
@@ -315,8 +322,8 @@ public class CryptoOutputStream extends FilterOutputStream implements
 
   @Override
   public boolean hasCapability(String capability) {
-    // Ciphertext is written to the wrapped stream as byte[]; direct ByteBuffer
-    // writes cannot be honored.
+    // A caller's bytes must be encrypted through inBuffer first, so this stream
+    // cannot accept direct ByteBuffer writes regardless of the wrapped stream.
     if (StreamCapabilities.WRITEBYTEBUFFER.equalsIgnoreCase(capability)) {
       return false;
     }
