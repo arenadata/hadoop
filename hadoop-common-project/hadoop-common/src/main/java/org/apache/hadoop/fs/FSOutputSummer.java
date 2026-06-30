@@ -25,6 +25,7 @@ import org.apache.hadoop.tracing.TraceScope;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.zip.Checksum;
 
 /**
@@ -34,7 +35,7 @@ import java.util.zip.Checksum;
 @InterfaceAudience.LimitedPrivate({"HDFS"})
 @InterfaceStability.Unstable
 abstract public class FSOutputSummer extends OutputStream implements
-    StreamCapabilities {
+    StreamCapabilities, ByteBufferWritable {
   // data checksum
   private final DataChecksum sum;
   // internal buffer for storing data before it is checksumed
@@ -43,6 +44,9 @@ abstract public class FSOutputSummer extends OutputStream implements
   private byte checksum[];
   // The number of valid bytes in the buffer.
   private int count;
+  // direct scratch buffer for checksums computed straight off a direct
+  // ByteBuffer (NativeCrc32 requires direct buffers); allocated lazily.
+  private ByteBuffer directChecksumBuf;
   
   // We want this value to be a multiple of 3 because the native code checksums
   // 3 chunks simultaneously. The chosen value of 9 strikes a balance between
@@ -62,6 +66,21 @@ abstract public class FSOutputSummer extends OutputStream implements
    */
   protected abstract void writeChunk(byte[] b, int bOffset, int bLen,
       byte[] checksum, int checksumOffset, int checksumLen) throws IOException;
+
+  /**
+   * Write a single chunk of data straight from a {@link ByteBuffer} (advancing
+   * its position by <code>len</code>) together with its precomputed checksum.
+   * The default implementation copies the chunk into a temporary array and
+   * delegates to {@link #writeChunk(byte[], int, int, byte[], int, int)};
+   * subclasses that can consume a ByteBuffer directly (e.g. DFSOutputStream)
+   * override this to avoid the copy.
+   */
+  protected void writeChunk(ByteBuffer b, int len, byte[] checksum,
+      int checksumOffset, int checksumLen) throws IOException {
+    byte[] tmp = new byte[len];
+    b.get(tmp, 0, len);
+    writeChunk(tmp, 0, len, checksum, checksumOffset, checksumLen);
+  }
   
   /**
    * Check if the implementing OutputStream is closed and should no longer
@@ -135,12 +154,77 @@ abstract public class FSOutputSummer extends OutputStream implements
     if (count == buf.length) {
       // local buffer is full
       flushBuffer();
-    } 
+    }
+    return bytesToCopy;
+  }
+
+  /**
+   * Writes the remaining bytes of the given buffer, generating a checksum for
+   * each chunk. When the buffer is a direct {@link ByteBuffer} and the stream
+   * advertises {@link StreamCapabilities#WRITEBYTEBUFFER}, full chunks are
+   * checksummed straight off the buffer and handed to
+   * {@link #writeChunk(ByteBuffer, int, byte[], int, int)} without an
+   * intermediate copy onto the Java heap. Otherwise the bytes are drained
+   * through the regular {@code byte[]} path.
+   */
+  @Override
+  public synchronized void write(ByteBuffer buf) throws IOException {
+    checkClosed();
+    if (!buf.isDirect()
+        || !hasCapability(StreamCapabilities.WRITEBYTEBUFFER)) {
+      writeByteBufferViaArray(buf);
+      return;
+    }
+    while (buf.hasRemaining()) {
+      write1(buf);
+    }
+  }
+
+  /**
+   * Drains the remaining bytes of the buffer through {@link #write(byte[], int,
+   * int)} and advances the buffer's position to its limit.
+   */
+  private void writeByteBufferViaArray(ByteBuffer src) throws IOException {
+    final int len = src.remaining();
+    if (src.hasArray()) {
+      write(src.array(), src.arrayOffset() + src.position(), len);
+      src.position(src.limit());
+    } else {
+      byte[] tmp = new byte[len];
+      src.get(tmp);
+      write(tmp, 0, tmp.length);
+    }
+  }
+
+  /**
+   * Write a portion of a direct ByteBuffer, flushing to the underlying stream
+   * at most once if necessary. Mirrors {@link #write1(byte[], int, int)}.
+   */
+  private int write1(ByteBuffer src) throws IOException {
+    final int remaining = src.remaining();
+    if (count == 0 && remaining >= buf.length) {
+      // local buffer is empty and the source holds at least a full local
+      // buffer, so checksum it straight off the source and send it directly to
+      // the underlying stream, avoiding a copy into buf.
+      final int length = buf.length;
+      writeChecksumChunks(src, length);
+      return length;
+    }
+
+    // copy user data into local buffer
+    int bytesToCopy = buf.length - count;
+    bytesToCopy = Math.min(remaining, bytesToCopy);
+    src.get(buf, count, bytesToCopy);
+    count += bytesToCopy;
+    if (count == buf.length) {
+      // local buffer is full
+      flushBuffer();
+    }
     return bytesToCopy;
   }
 
   /* Forces any buffered output bytes to be checksumed and written out to
-   * the underlying output stream. 
+   * the underlying output stream.
    */
   protected synchronized void flushBuffer() throws IOException {
     flushBuffer(false, true);
@@ -219,6 +303,48 @@ abstract public class FSOutputSummer extends OutputStream implements
         int ckOffset = i / sum.getBytesPerChecksum() * getChecksumSize();
         writeChunk(b, off + i, chunkLen, checksum, ckOffset,
             getChecksumSize());
+      }
+    } finally {
+      if (scope != null) {
+        scope.close();
+      }
+    }
+  }
+
+  /**
+   * Generate checksums for <code>len</code> bytes (a multiple of the chunk
+   * size) read straight from <code>src</code> and output the chunks &amp; their
+   * checksums to the underlying stream, advancing <code>src</code> by
+   * <code>len</code>. The checksums are computed directly off the (direct)
+   * source buffer; no copy of the data is made onto the Java heap.
+   */
+  private void writeChecksumChunks(ByteBuffer src, int len)
+  throws IOException {
+    final int bytesPerChecksum = sum.getBytesPerChecksum();
+    final int checksumSize = getChecksumSize();
+    final int numChunks = (len + bytesPerChecksum - 1) / bytesPerChecksum;
+    final int ckLen = numChunks * checksumSize;
+
+    // NativeCrc32 needs direct buffers for both data and checksums, so compute
+    // into a direct scratch buffer and copy the (tiny) checksums into the heap
+    // checksum array that writeChunk expects.
+    if (directChecksumBuf == null || directChecksumBuf.capacity() < ckLen) {
+      directChecksumBuf = ByteBuffer.allocateDirect(checksum.length);
+    }
+    directChecksumBuf.clear().limit(ckLen);
+    ByteBuffer data = src.duplicate();
+    data.limit(data.position() + len);
+    sum.calculateChunkedSums(data, directChecksumBuf);
+    directChecksumBuf.position(0);
+    directChecksumBuf.get(checksum, 0, ckLen);
+
+    TraceScope scope = createWriteTraceScope();
+    try {
+      for (int i = 0; i < len; i += bytesPerChecksum) {
+        int chunkLen = Math.min(bytesPerChecksum, len - i);
+        int ckOffset = i / bytesPerChecksum * checksumSize;
+        // writeChunk consumes chunkLen bytes from src, advancing its position.
+        writeChunk(src, chunkLen, checksum, ckOffset, checksumSize);
       }
     } finally {
       if (scope != null) {

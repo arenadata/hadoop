@@ -315,6 +315,11 @@ public class CryptoOutputStream extends FilterOutputStream implements
 
   @Override
   public boolean hasCapability(String capability) {
+    // Ciphertext is written to the wrapped stream as byte[]; direct ByteBuffer
+    // writes cannot be honored.
+    if (StreamCapabilities.WRITEBYTEBUFFER.equalsIgnoreCase(capability)) {
+      return false;
+    }
     return StoreImplementationUtils.hasCapability(out, capability);
   }
 

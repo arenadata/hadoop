@@ -76,6 +76,12 @@ public interface StreamCapabilities {
   String PREADBYTEBUFFER = "in:preadbytebuffer";
 
   /**
+   * Stream write(ByteBuffer) capability implemented by
+   * {@link ByteBufferWritable#write(java.nio.ByteBuffer)}.
+   */
+  String WRITEBYTEBUFFER = "out:writebytebuffer";
+
+  /**
    * IOStatisticsSource API.
    */
   String IOSTATISTICS = "iostatistics";

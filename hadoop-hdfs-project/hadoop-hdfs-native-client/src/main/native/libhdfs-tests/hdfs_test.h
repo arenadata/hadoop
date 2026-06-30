@@ -68,6 +68,24 @@ extern  "C" {
     void hdfsFileDisableDirectPread(struct hdfsFile_internal *file);
 
     /**
+     * Determine if a file is using the "direct write" optimization.
+     *
+     * @param file     The HDFS file
+     * @return         1 if the file is using the direct write optimization,
+     *                 0 otherwise.
+     */
+    int hdfsFileUsesDirectWrite(struct hdfsFile_internal *file);
+
+    /**
+     * Disable the direct write optimization for a file.
+     *
+     * This is mainly provided for unit testing purposes.
+     *
+     * @param file     The HDFS file
+     */
+    void hdfsFileDisableDirectWrite(struct hdfsFile_internal *file);
+
+    /**
      * Disable domain socket security checks.
      *
      * @param          0 if domain socket security was disabled;

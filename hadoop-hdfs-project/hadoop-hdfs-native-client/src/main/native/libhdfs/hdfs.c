@@ -41,10 +41,12 @@
 // StreamCapability flags taken from o.a.h.fs.StreamCapabilities
 #define IS_READ_BYTE_BUFFER_CAPABILITY "in:readbytebuffer"
 #define IS_PREAD_BYTE_BUFFER_CAPABILITY "in:preadbytebuffer"
+#define IS_WRITE_BYTE_BUFFER_CAPABILITY "out:writebytebuffer"
 
 // Bit fields for hdfsFile_internal flags
 #define HDFS_FILE_SUPPORTS_DIRECT_READ (1<<0)
 #define HDFS_FILE_SUPPORTS_DIRECT_PREAD (1<<1)
+#define HDFS_FILE_SUPPORTS_DIRECT_WRITE (1<<2)
 
 /**
  * Reads bytes using the read(ByteBuffer) API. By using Java
@@ -63,6 +65,13 @@ tSize preadDirect(hdfsFS fs, hdfsFile file, tOffset position, void* buffer,
 
 int preadFullyDirect(hdfsFS fs, hdfsFile file, tOffset position, void* buffer,
                   tSize length);
+
+/**
+ * Writes bytes using the write(ByteBuffer) API. By using Java
+ * DirectByteBuffers we can avoid copying the bytes onto the Java heap.
+ * Instead the data is read directly out of the C heap by the stream.
+ */
+tSize writeDirect(hdfsFS fs, hdfsFile f, const void* buffer, tSize length);
 
 static void hdfsFreeFileInfoEntry(hdfsFileInfo *hdfsFileInfo);
 
@@ -323,6 +332,16 @@ int hdfsFileUsesDirectPread(hdfsFile file)
 void hdfsFileDisableDirectPread(hdfsFile file)
 {
     file->flags &= ~HDFS_FILE_SUPPORTS_DIRECT_PREAD;
+}
+
+int hdfsFileUsesDirectWrite(hdfsFile file)
+{
+    return (file->flags & HDFS_FILE_SUPPORTS_DIRECT_WRITE) != 0;
+}
+
+void hdfsFileDisableDirectWrite(hdfsFile file)
+{
+    file->flags &= ~HDFS_FILE_SUPPORTS_DIRECT_WRITE;
 }
 
 
@@ -1037,7 +1056,7 @@ int hdfsStreamBuilderSetDefaultBlockSize(struct hdfsStreamBuilder *bld,
  * @see org.apache.hadoop.fs.StreamCapabilities
  */
 static int hdfsHasStreamCapability(jobject jFile,
-        const char *capability) {
+        CachedJavaClass cachedClass, const char *capability) {
     int ret = 0;
     jthrowable jthr = NULL;
     jvalue jVal;
@@ -1057,11 +1076,11 @@ static int hdfsHasStreamCapability(jobject jFile,
         goto done;
     }
     jthr = invokeMethod(env, &jVal, INSTANCE, jFile,
-            JC_FS_DATA_INPUT_STREAM, "hasCapability", "(Ljava/lang/String;)Z",
+            cachedClass, "hasCapability", "(Ljava/lang/String;)Z",
             jCapabilityString);
     if (jthr) {
         ret = printExceptionAndFree(env, jthr, PRINT_EXC_ALL,
-                "hdfsHasStreamCapability(%s): FSDataInputStream#hasCapability",
+                "hdfsHasStreamCapability(%s): #hasCapability",
                 capability);
         goto done;
     }
@@ -1087,15 +1106,27 @@ done:
  * @param jFile the underlying stream to check for capabilities
  */
 static void setFileFlagCapabilities(hdfsFile file, jobject jFile) {
+    if (file->type == HDFS_STREAM_OUTPUT) {
+        // Check the StreamCapabilities of jFile to see if we can do direct
+        // writes (write the bytes straight out of a C DirectByteBuffer)
+        if (hdfsHasStreamCapability(jFile, JC_FS_DATA_OUTPUT_STREAM,
+                IS_WRITE_BYTE_BUFFER_CAPABILITY)) {
+            file->flags |= HDFS_FILE_SUPPORTS_DIRECT_WRITE;
+        }
+        return;
+    }
+
     // Check the StreamCapabilities of jFile to see if we can do direct
     // reads
-    if (hdfsHasStreamCapability(jFile, IS_READ_BYTE_BUFFER_CAPABILITY)) {
+    if (hdfsHasStreamCapability(jFile, JC_FS_DATA_INPUT_STREAM,
+            IS_READ_BYTE_BUFFER_CAPABILITY)) {
         file->flags |= HDFS_FILE_SUPPORTS_DIRECT_READ;
     }
 
     // Check the StreamCapabilities of jFile to see if we can do direct
     // preads
-    if (hdfsHasStreamCapability(jFile, IS_PREAD_BYTE_BUFFER_CAPABILITY)) {
+    if (hdfsHasStreamCapability(jFile, JC_FS_DATA_INPUT_STREAM,
+            IS_PREAD_BYTE_BUFFER_CAPABILITY)) {
         file->flags |= HDFS_FILE_SUPPORTS_DIRECT_PREAD;
     }
 }
@@ -1269,9 +1300,7 @@ static hdfsFile hdfsOpenFileImpl(hdfsFS fs, const char *path, int flags,
         HDFS_STREAM_OUTPUT);
     file->flags = 0;
 
-    if ((flags & O_WRONLY) == 0) {
-        setFileFlagCapabilities(file, jFile);
-    }
+    setFileFlagCapabilities(file, jFile);
     ret = 0;
 
 done:
@@ -2371,6 +2400,13 @@ tSize hdfsWrite(hdfsFS fs, hdfsFile f, const void* buffer, tSize length)
     if (length == 0) {
         return 0;
     }
+
+    // If the stream supports direct writes, hand the bytes straight to the
+    // JVM out of a DirectByteBuffer and skip the heap byte[] round-trip.
+    if (f->flags & HDFS_FILE_SUPPORTS_DIRECT_WRITE) {
+        return writeDirect(fs, f, buffer, length);
+    }
+
     //Write the requisite bytes into the file
     jbWarray = (*env)->NewByteArray(env, length);
     if (!jbWarray) {
@@ -2399,7 +2435,49 @@ tSize hdfsWrite(hdfsFS fs, hdfsFile f, const void* buffer, tSize length)
     return length;
 }
 
-int hdfsSeek(hdfsFS fs, hdfsFile f, tOffset desiredPos) 
+tSize writeDirect(hdfsFS fs, hdfsFile f, const void* buffer, tSize length)
+{
+    // JAVA EQUIVALENT:
+    //  ByteBuffer buf = ByteBuffer.allocateDirect(length) // wraps C buffer
+    //  fos.write(buf);
+
+    jobject jOutputStream;
+    jthrowable jthr;
+    jobject bb;
+
+    //Get the JNIEnv* corresponding to current thread
+    JNIEnv* env = getJNIEnv();
+    if (env == NULL) {
+      errno = EINTERNAL;
+      return -1;
+    }
+
+    jOutputStream = f->file;
+
+    //Wrap the C buffer in a DirectByteBuffer; no copy onto the Java heap. The
+    //stream only reads from it, so the const cast for NewDirectByteBuffer is safe.
+    bb = (*env)->NewDirectByteBuffer(env, (void*)buffer, length);
+    if (bb == NULL) {
+        errno = printPendingExceptionAndFree(env, PRINT_EXC_ALL,
+            "writeDirect: NewDirectByteBuffer");
+        return -1;
+    }
+
+    jthr = invokeMethod(env, NULL, INSTANCE, jOutputStream,
+            JC_FS_DATA_OUTPUT_STREAM, "write",
+            "(Ljava/nio/ByteBuffer;)V", bb);
+    destroyLocalReference(env, bb);
+    if (jthr) {
+        errno = printExceptionAndFree(env, jthr, PRINT_EXC_ALL,
+            "writeDirect: FSDataOutputStream#write");
+        return -1;
+    }
+    // Like the byte[] path, FSDataOutputStream#write(ByteBuffer) consumes the
+    // whole buffer and never does partial writes.
+    return length;
+}
+
+int hdfsSeek(hdfsFS fs, hdfsFile f, tOffset desiredPos)
 {
     // JAVA EQUIVALENT
     //  fis.seek(pos);
