@@ -45,11 +45,13 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairSchedule
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+import org.apache.hadoop.yarn.server.webapp.WebPageUtils;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
 import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -84,6 +86,45 @@ public class TestRMWebAppFairScheduler {
         .class);
     fsViewInstance.render();
     WebAppTests.flushOutput(injector);
+  }
+
+  @Test
+  public void testFairSchedulerAppColumnIndices() {
+    List<Integer> colsId = new ArrayList<>();
+    List<Integer> colsTime = new ArrayList<>();
+    List<Integer> colsProgress = new ArrayList<>();
+    int stateColumnIndex = -1;
+
+    for (int i = 0; i < FairSchedulerAppsBlock.COLUMNS.length; i++) {
+      ColumnHeader col = FairSchedulerAppsBlock.COLUMNS[i];
+      if (col.getCData().contains("ID")) {
+        colsId.add(i);
+      } else if (col.getCData().contains("Time")) {
+        colsTime.add(i);
+      } else if (col.getCData().contains("Progress")) {
+        colsProgress.add(i);
+      } else if ("State".equals(col.getCData())) {
+        stateColumnIndex = i;
+      }
+    }
+
+    Assert.assertTrue("State column should exist", stateColumnIndex > -1);
+
+    String tableInit = WebPageUtils.appsTableInit(true, false);
+    for (String tableLine : tableInit.split("\\n")) {
+      if (tableLine.contains("parseHadoopID")) {
+        Assert.assertTrue(tableLine + " should have id " + colsId,
+            tableLine.contains(colsId.toString()));
+      } else if (tableLine.contains("renderHadoopDate")) {
+        Assert.assertTrue(tableLine + " should have dates " + colsTime,
+            tableLine.contains(colsTime.toString()));
+        Assert.assertFalse(tableLine + " should not render state as a date",
+            tableLine.contains(String.valueOf(stateColumnIndex)));
+      } else if (tableLine.contains("parseHadoopProgress")) {
+        Assert.assertTrue(tableLine + " should have progress " + colsProgress,
+            tableLine.contains(colsProgress.toString()));
+      }
+    }
   }
 
 
