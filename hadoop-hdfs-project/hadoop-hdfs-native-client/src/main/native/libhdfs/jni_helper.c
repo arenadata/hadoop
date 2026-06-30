@@ -27,8 +27,19 @@
 #include "x-platform/types.h"
 
 #include <errno.h>
-#include <stdio.h> 
-#include <string.h> 
+#include <stdio.h>
+#include <string.h>
+
+/* Export a libhdfs-internal symbol from the shared library so other in-process components can
+ * resolve it (hdfs.h's LIBHDFS_EXTERNAL is #undef'd at the end of that header, so it can't be
+ * reused here). Harmless for the static library. */
+#ifdef WIN32
+    #define LIBHDFS_RUNTIME_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__)
+    #define LIBHDFS_RUNTIME_EXPORT __attribute__((visibility("default")))
+#else
+    #define LIBHDFS_RUNTIME_EXPORT
+#endif
 
 /** The Native return types that methods could return */
 #define JVOID         'V'
@@ -203,7 +214,7 @@ jthrowable findClassAndInvokeMethod(JNIEnv *env, jvalue *retval,
         goto done;
     }
 
-    cls = (*env)->FindClass(env, className);
+    cls = globalFindClass(env, className);
     if (!cls) {
         jthr = getPendingExceptionAndClear(env);
         goto done;
@@ -260,7 +271,7 @@ jthrowable constructNewObjectOfClass(JNIEnv *env, jobject *out,
     jclass cls;
     jthrowable jthr = NULL;
 
-    cls = (*env)->FindClass(env, className);
+    cls = globalFindClass(env, className);
     if (!cls) {
         jthr = getPendingExceptionAndClear(env);
         goto done;
@@ -558,20 +569,19 @@ static ssize_t getClassPath_helper(const char *classpath, char* expandedClasspat
 }
 
 /**
- * Gets the classpath. Wild card entries are resolved only if the entry ends
- * with "/\*" (backslash to escape commenting) to match against .jar and .JAR.
- * All other wild card entries (eg /path/to/dir/\*foo*) are not resolved,
+ * Expands a classpath string. Wild card entries are resolved only if the entry
+ * ends with "/\*" (backslash to escape commenting) to match against .jar and
+ * .JAR. All other wild card entries (eg /path/to/dir/\*foo*) are not resolved,
  * following JAVA default behavior, see:
  * https://docs.oracle.com/javase/8/docs/technotes/tools/unix/classpath.html
+ * Returns a malloc'd expanded classpath, or NULL.
  */
-static char* getClassPath()
+static char* expandClassPath(const char* classpath)
 {
-    char* classpath;
     char* expandedClasspath;
     ssize_t length;
     ssize_t retval;
 
-    classpath = getenv("CLASSPATH");
     if (classpath == NULL) {
       return NULL;
     }
@@ -643,6 +653,297 @@ static char* getClassPath()
     return expandedClasspath;
 }
 
+/* Gets the (wildcard-expanded) CLASSPATH environment variable, or NULL. */
+static char* getClassPath()
+{
+    return expandClassPath(getenv("CLASSPATH"));
+}
+
+
+/* ===========================================================================
+ * Optional isolated runtime classloader (OPT-IN, off by default).
+ *
+ * Dormant unless BOTH hold:
+ *   (1) env LIBHDFS_RUNTIME_CLASSLOADER_PATH is a classpath (jars, dirs, and
+ *       "dir/\*" globs, like CLASSPATH), and
+ *   (2) libhdfs attached to a pre-existing JVM (it did not create the JVM).
+ * When off, globalFindClass() == (*env)->FindClass(), so the default behaviour
+ * is byte-for-byte unchanged.
+ *
+ * When on (libhdfs is loaded into a JVM that another component already created,
+ * whose system classloader does not have the Hadoop jars on its classpath),
+ * FindClass on an attached thread returns NULL -> crash. We instead resolve
+ * Hadoop classes through an isolated classloader built from
+ * LIBHDFS_RUNTIME_CLASSLOADER_PATH, and pin it as the thread context classloader
+ * so Hadoop's ServiceLoader lookups (FileSystem impls) resolve too.
+ *
+ * That classloader is, by preference, an instance of the class named by env
+ * LIBHDFS_RUNTIME_CLASSLOADER_CLASS (e.g. a child-first loader that keeps the
+ * supplied classpath's dependency versions while delegating other classes to its
+ * parent); if that env is unset or the class is not found, a plain URLClassLoader
+ * (parent = system classloader) is used instead.
+ * =========================================================================== */
+
+/* -1 unknown; 0 = libhdfs created the JVM; 1 = JVM pre-existed (attach). */
+static int gJvmPreexisting = -1;
+/* Global ref to the isolated loader, or NULL when the gate is off. */
+static jobject gRuntimeClassLoader = NULL;
+/* java.lang.Class + Class.forName(String,boolean,ClassLoader), cached with the loader. */
+static jclass gClassClassRef = NULL;
+static jmethodID gForNameMethod = NULL;
+/* java.lang.Thread + currentThread()/setContextClassLoader(), cached for cheap TCCL re-pinning. */
+static jclass gThreadClassRef = NULL;
+static jmethodID gCurrentThreadMethod = NULL;
+static jmethodID gSetTcclMethod = NULL;
+/* Set once the (expensive) loader build has been attempted, so a build failure
+ * with the gate ON is not re-tried on every attaching thread. */
+static int gLoaderInitAttempted = 0;
+
+/* Build the runtime classloader over classPath (a classpath string: jars, dirs, and "dir/\*"
+ * globs, like CLASSPATH): an instance of the class named by LIBHDFS_RUNTIME_CLASSLOADER_CLASS
+ * (a custom, e.g. child-first, loader over those entries) when that env is set and the class is
+ * present, else a plain parent-first URLClassLoader (parent = system classloader). Returns a new
+ * global ref, or NULL (with any JNI exception cleared) on error. jvmMutex held. */
+static jobject buildRuntimeClassLoader(JNIEnv *env, const char *classPath)
+{
+    char *expanded, *tok, *save = NULL;
+    char **paths = NULL;
+    size_t n = 0, cap = 0, i;
+    int classRequested = 0;
+    jclass fileCls = NULL, uriCls = NULL, urlCls = NULL, loaderCls = NULL, clCls = NULL, rclCls = NULL;
+    jmethodID fileCtor = NULL, toURI = NULL, toURL = NULL, loaderCtor = NULL, getSystem = NULL, loadClassMid = NULL;
+    jobjectArray urls = NULL;
+    jobject system = NULL, bootstrap = NULL, loader = NULL, result = NULL;
+
+    /* Expand any "dir/\*" entries to concrete jars, then split into per-entry paths
+     * (each path is a jar or a directory of classes/resources). */
+    expanded = expandClassPath(classPath);
+    if (!expanded) {
+        fprintf(stderr, "libhdfs runtime classloader: empty/invalid classpath\n");
+        return NULL;
+    }
+    for (tok = strtok_r(expanded, PATH_SEPARATOR_STR, &save); tok != NULL;
+         tok = strtok_r(NULL, PATH_SEPARATOR_STR, &save)) {
+        char *dup, **grown;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 64;
+            grown = realloc(paths, cap * sizeof(*paths));
+            if (!grown) { free(expanded); goto cleanup_paths; }
+            paths = grown;
+        }
+        dup = strdup(tok);
+        if (!dup) { free(expanded); goto cleanup_paths; }
+        paths[n++] = dup;
+    }
+    free(expanded);
+    if (n == 0) {
+        fprintf(stderr, "libhdfs runtime classloader: empty classpath\n");
+        goto cleanup_paths;
+    }
+
+    fileCls   = (*env)->FindClass(env, "java/io/File");
+    uriCls    = (*env)->FindClass(env, "java/net/URI");
+    urlCls    = (*env)->FindClass(env, "java/net/URL");
+    loaderCls = (*env)->FindClass(env, "java/net/URLClassLoader");
+    clCls     = (*env)->FindClass(env, "java/lang/ClassLoader");
+    if (!fileCls || !uriCls || !urlCls || !loaderCls || !clCls) goto cleanup;
+    fileCtor    = (*env)->GetMethodID(env, fileCls, "<init>", "(Ljava/lang/String;)V");
+    toURI       = (*env)->GetMethodID(env, fileCls, "toURI", "()Ljava/net/URI;");
+    toURL       = (*env)->GetMethodID(env, uriCls, "toURL", "()Ljava/net/URL;");
+    loaderCtor   = (*env)->GetMethodID(env, loaderCls, "<init>",
+                       "([Ljava/net/URL;Ljava/lang/ClassLoader;)V");
+    getSystem    = (*env)->GetStaticMethodID(env, clCls, "getSystemClassLoader",
+                       "()Ljava/lang/ClassLoader;");
+    loadClassMid = (*env)->GetMethodID(env, clCls, "loadClass",
+                       "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (!fileCtor || !toURI || !toURL || !loaderCtor || !getSystem || !loadClassMid) goto cleanup;
+
+    urls = (*env)->NewObjectArray(env, (jsize)n, urlCls, NULL);
+    if (!urls) goto cleanup;
+    for (i = 0; i < n; i++) {
+        jstring js = (*env)->NewStringUTF(env, paths[i]);
+        jobject file, uri, url;
+        if (!js) goto cleanup;
+        file = (*env)->NewObject(env, fileCls, fileCtor, js);
+        (*env)->DeleteLocalRef(env, js);
+        if (!file) goto cleanup;
+        uri = (*env)->CallObjectMethod(env, file, toURI);
+        (*env)->DeleteLocalRef(env, file);
+        if (!uri || (*env)->ExceptionCheck(env)) goto cleanup;
+        url = (*env)->CallObjectMethod(env, uri, toURL);
+        (*env)->DeleteLocalRef(env, uri);
+        if (!url || (*env)->ExceptionCheck(env)) goto cleanup;
+        (*env)->SetObjectArrayElement(env, urls, (jsize)i, url);
+        (*env)->DeleteLocalRef(env, url);
+    }
+    /* Parent = the system classloader so the loader can SEE the host's classes; a custom
+     * child-first loader (LIBHDFS_RUNTIME_CLASSLOADER_CLASS, below) keeps the supplied jars'
+     * dependency versions winning for code loaded through it. */
+    system = (*env)->CallStaticObjectMethod(env, clCls, getSystem);
+    if ((*env)->ExceptionCheck(env)) goto cleanup;
+    /* Bootstrap loader (plain, parent=system): used only to load the custom loader class
+     * out of the supplied jars. */
+    bootstrap = (*env)->NewObject(env, loaderCls, loaderCtor, urls, system);
+    if (!bootstrap || (*env)->ExceptionCheck(env)) goto cleanup;
+    {
+        /* Optional custom loader class (binary name); unset -> plain URLClassLoader. */
+        const char *loaderClassName = getenv("LIBHDFS_RUNTIME_CLASSLOADER_CLASS");
+        if (loaderClassName && *loaderClassName) {
+            jstring rclName = (*env)->NewStringUTF(env, loaderClassName);
+            classRequested = 1;
+            if (rclName) {
+                rclCls = (jclass) (*env)->CallObjectMethod(env, bootstrap, loadClassMid, rclName);
+                (*env)->DeleteLocalRef(env, rclName);
+            }
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); /* not present -> fall back */
+        }
+    }
+    if (rclCls) {
+        /* Custom loader ctor signature must match URLClassLoader(URL[], ClassLoader). */
+        jmethodID rclCtor = (*env)->GetMethodID(env, rclCls, "<init>",
+            "([Ljava/net/URL;Ljava/lang/ClassLoader;)V");
+        if (rclCtor) {
+            loader = (*env)->NewObject(env, rclCls, rclCtor, urls, system);
+        }
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); /* ctor missing/failed -> fall back */
+    }
+    if (!loader) {
+        /* Fall back to the plain bootstrap loader (parent-first, parent=system). */
+        if (classRequested) {
+            fprintf(stderr, "libhdfs runtime classloader: configured loader class unavailable; "
+                            "using plain parent-first URLClassLoader\n");
+        }
+        loader = bootstrap;
+        bootstrap = NULL; /* ownership moves to 'loader'; avoid a double DeleteLocalRef */
+    }
+    result = (*env)->NewGlobalRef(env, loader);
+
+cleanup:
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+    if (loader)    (*env)->DeleteLocalRef(env, loader);
+    if (bootstrap) (*env)->DeleteLocalRef(env, bootstrap);
+    if (rclCls)    (*env)->DeleteLocalRef(env, rclCls);
+    if (system)    (*env)->DeleteLocalRef(env, system);
+    if (urls)      (*env)->DeleteLocalRef(env, urls);
+    if (fileCls)   (*env)->DeleteLocalRef(env, fileCls);
+    if (uriCls)    (*env)->DeleteLocalRef(env, uriCls);
+    if (urlCls)    (*env)->DeleteLocalRef(env, urlCls);
+    if (loaderCls) (*env)->DeleteLocalRef(env, loaderCls);
+    if (clCls)     (*env)->DeleteLocalRef(env, clCls);
+cleanup_paths:
+    for (i = 0; i < n; i++) free(paths[i]);
+    free(paths);
+    return result;
+}
+
+/* Build the runtime loader + cache Class.forName once, if the gate is on. jvmMutex held. */
+static void maybeInitRuntimeClassLoaderLocked(JNIEnv *env)
+{
+    const char *classPath;
+    jclass classCls;
+    if (gRuntimeClassLoader || gLoaderInitAttempted) return;
+    classPath = getenv("LIBHDFS_RUNTIME_CLASSLOADER_PATH");
+    if (!classPath || !*classPath) return; // gate off: stay responsive (cheap getenv), don't mark attempted
+    gLoaderInitAttempted = 1;              // build at most once, even if it fails
+    gRuntimeClassLoader = buildRuntimeClassLoader(env, classPath);
+    if (!gRuntimeClassLoader) return;
+    classCls = (*env)->FindClass(env, "java/lang/Class");
+    if (classCls) {
+        gForNameMethod = (*env)->GetStaticMethodID(env, classCls, "forName",
+            "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+        gClassClassRef = (jclass) (*env)->NewGlobalRef(env, classCls);
+        (*env)->DeleteLocalRef(env, classCls);
+    }
+    if (!gForNameMethod || !gClassClassRef) {
+        /* Couldn't cache Class.forName: drop everything so globalFindClass stays on FindClass. */
+        fprintf(stderr, "libhdfs runtime classloader: Class.forName unavailable; disabling\n");
+        if (gClassClassRef) {
+            (*env)->DeleteGlobalRef(env, gClassClassRef);
+            gClassClassRef = NULL;
+        }
+        gForNameMethod = NULL;
+        (*env)->DeleteGlobalRef(env, gRuntimeClassLoader);
+        gRuntimeClassLoader = NULL;
+    }
+    /* Cache Thread.currentThread()/setContextClassLoader() for cheap per-call TCCL re-pinning.
+     * Best-effort: if unavailable, TCCL pinning is skipped (globalFindClass still resolves through
+     * the loader explicitly). */
+    if (gRuntimeClassLoader) {
+        jclass threadCls = (*env)->FindClass(env, "java/lang/Thread");
+        if (threadCls) {
+            jmethodID cur = (*env)->GetStaticMethodID(env, threadCls, "currentThread",
+                                "()Ljava/lang/Thread;");
+            jmethodID setc = (*env)->GetMethodID(env, threadCls, "setContextClassLoader",
+                                "(Ljava/lang/ClassLoader;)V");
+            if (cur && setc) {
+                gThreadClassRef = (jclass) (*env)->NewGlobalRef(env, threadCls);
+                gCurrentThreadMethod = cur;
+                gSetTcclMethod = setc;
+            }
+            (*env)->DeleteLocalRef(env, threadCls);
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+/* Pin the runtime loader as this thread's context classloader (no-op if the gate is off or the
+ * Thread accessors weren't cached). Cheap (cached method ids) and re-asserted on every getJNIEnv,
+ * so a host that resets a pooled thread's TCCL between calls cannot strand a later Hadoop
+ * Configuration/ServiceLoader on its own (Hadoop-free) loader. */
+static void setThreadContextClassLoader(JNIEnv *env)
+{
+    jobject self;
+    if (!gRuntimeClassLoader || !gCurrentThreadMethod || !gSetTcclMethod) {
+        return;
+    }
+    self = (*env)->CallStaticObjectMethod(env, gThreadClassRef, gCurrentThreadMethod);
+    if (self) {
+        (*env)->CallVoidMethod(env, self, gSetTcclMethod, gRuntimeClassLoader);
+        (*env)->DeleteLocalRef(env, self);
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+/* Resolve a class. Gate off: identical to (*env)->FindClass. Gate on: resolve
+ * through the isolated runtime classloader via Class.forName(name, true, loader). */
+jclass globalFindClass(JNIEnv *env, const char *className)
+{
+    char *binary;
+    size_t len, k;
+    jstring jname;
+    jclass cls;
+    if (!gRuntimeClassLoader || !gForNameMethod) {
+        return (*env)->FindClass(env, className);
+    }
+    len = strlen(className);
+    binary = malloc(len + 1);
+    if (!binary) return (*env)->FindClass(env, className);
+    for (k = 0; k < len; k++) binary[k] = (className[k] == '/') ? '.' : className[k];
+    binary[len] = '\0';
+    jname = (*env)->NewStringUTF(env, binary);
+    free(binary);
+    if (!jname) return NULL;
+    cls = (jclass) (*env)->CallStaticObjectMethod(env, gClassClassRef, gForNameMethod,
+              jname, JNI_TRUE, gRuntimeClassLoader);
+    (*env)->DeleteLocalRef(env, jname);
+    /* On failure Class.forName leaves a pending ClassNotFoundException and returns
+     * NULL, matching FindClass's contract (callers do getPendingExceptionAndClear). */
+    return cls;
+}
+
+/* Expose the isolated loader so other JNI code in the same process can resolve classes
+ * through the SAME loader (one loader => one copy of Hadoop's static state, e.g. one UGI
+ * login). Returns a JNI global ref (valid for the JVM lifetime), or NULL when the gate is
+ * off. */
+LIBHDFS_RUNTIME_EXPORT
+jobject hdfsGetRuntimeClassLoader(void)
+{
+    return gRuntimeClassLoader;
+}
+
 
 /**
  * Get the global JNI environemnt.
@@ -679,6 +980,8 @@ static JNIEnv* getGlobalJNIEnv(void)
     }
 
     if (noVMs == 0) {
+        // libhdfs is creating the JVM itself -> isolated loader stays off.
+        gJvmPreexisting = 0;
         //Get the environment variables for initializing the JVM
         hadoopClassPath = getClassPath();
         if (hadoopClassPath == NULL) {
@@ -764,6 +1067,13 @@ static JNIEnv* getGlobalJNIEnv(void)
                     "failed with error: %d\n", rv);
             return NULL;
         }
+        /* JVM pre-existed (libhdfs did not create it). Build the isolated runtime classloader
+         * once (no-op unless LIBHDFS_RUNTIME_CLASSLOADER_PATH is set). The thread context
+         * classloader is pinned by getJNIEnv, re-asserted on every call. */
+        if (gJvmPreexisting != 0) {
+            gJvmPreexisting = 1;
+            maybeInitRuntimeClassLoaderLocked(env);
+        }
     }
 
     return env;
@@ -792,7 +1102,12 @@ JNIEnv* getJNIEnv(void)
 {
     struct ThreadLocalState *state = NULL;
     THREAD_LOCAL_STORAGE_GET_QUICK(&state);
-    if (state) return state->env;
+    if (state) {
+      /* Re-assert the context classloader (no-op unless the isolated loader is active), in case
+       * the host reset this (possibly pooled) thread's TCCL since the last call. */
+      setThreadContextClassLoader(state->env);
+      return state->env;
+    }
 
     mutexLock(&jvmMutex);
     if (threadLocalStorageGet(&state)) {
@@ -808,6 +1123,7 @@ JNIEnv* getJNIEnv(void)
       state->lastExceptionRootCause = NULL;
       state->lastExceptionStackTrace = NULL;
 
+      setThreadContextClassLoader(state->env);
       return state->env;
     }
 
@@ -843,6 +1159,7 @@ JNIEnv* getJNIEnv(void)
     THREAD_LOCAL_STORAGE_SET_QUICK(state);
     mutexUnlock(&jvmMutex);
 
+    setThreadContextClassLoader(state->env);
     return state->env;
 
 fail:
@@ -905,7 +1222,7 @@ int javaObjectIsOfClass(JNIEnv *env, jobject obj, const char *name)
     jclass clazz;
     int ret;
 
-    clazz = (*env)->FindClass(env, name);
+    clazz = globalFindClass(env, name);
     if (!clazz) {
         printPendingExceptionAndFree(env, PRINT_EXC_ALL,
             "javaObjectIsOfClass(%s)", name);
@@ -947,7 +1264,7 @@ jthrowable fetchEnumInstance(JNIEnv *env, const char *className,
     jobject jEnum;
     char prettyClass[256];
 
-    clazz = (*env)->FindClass(env, className);
+    clazz = globalFindClass(env, className);
     if (!clazz) {
         return getPendingExceptionAndClear(env);
     }

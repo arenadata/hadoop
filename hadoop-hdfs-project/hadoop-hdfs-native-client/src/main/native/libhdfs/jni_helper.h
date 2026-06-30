@@ -120,6 +120,15 @@ jthrowable methodIdFromClass(jclass cls, const char *className,
         const char *methName, const char *methSignature, MethType methType,
         JNIEnv *env, jmethodID *out);
 
+/**
+ * Resolve a class by JNI internal name. Identical to
+ * (*env)->FindClass(env, className) unless the optional isolated runtime
+ * classloader is active (env LIBHDFS_RUNTIME_CLASSLOADER_PATH set and libhdfs
+ * attached to a pre-existing JVM), in which case it resolves through that
+ * loader. See jni_helper.c.
+ */
+jclass globalFindClass(JNIEnv *env, const char *className);
+
 /** classNameOfObject: Get an object's class name.
  * @param jobj: The object.
  * @param env: The JNIEnv pointer.
