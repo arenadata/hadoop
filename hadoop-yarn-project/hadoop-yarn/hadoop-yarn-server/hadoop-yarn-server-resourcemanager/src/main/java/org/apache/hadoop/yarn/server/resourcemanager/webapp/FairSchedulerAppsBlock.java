@@ -47,6 +47,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FairSchedulerInf
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TABLE;
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TBODY;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.THEAD;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TR;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 
@@ -59,6 +61,27 @@ import javax.servlet.http.HttpServletRequest;
  * scheduler as part of the fair scheduler page.
  */
 public class FairSchedulerAppsBlock extends HtmlBlock {
+  static final ColumnHeader[] COLUMNS = {
+      new ColumnHeader(".id", "ID"),
+      new ColumnHeader(".user", "User"),
+      new ColumnHeader(".name", "Name"),
+      new ColumnHeader(".type", "Application Type"),
+      new ColumnHeader(".queue", "Queue"),
+      new ColumnHeader(".fairshare", "Fair Share"),
+      new ColumnHeader(".starttime", "StartTime"),
+      new ColumnHeader(".launchTime", "LaunchTime"),
+      new ColumnHeader(".finishtime", "FinishTime"),
+      new ColumnHeader(".state", "State"),
+      new ColumnHeader(".finalstatus", "FinalStatus"),
+      new ColumnHeader(".runningcontainer", "Running Containers"),
+      new ColumnHeader(".allocatedCpu", "Allocated CPU VCores"),
+      new ColumnHeader(".allocatedMemory", "Allocated Memory MB"),
+      new ColumnHeader(".reservedCpu", "Reserved CPU VCores"),
+      new ColumnHeader(".reservedMemory", "Reserved Memory MB"),
+      new ColumnHeader(".progress", "Progress"),
+      new ColumnHeader(".ui", "Tracking UI")
+  };
+
   final ConcurrentMap<ApplicationId, RMApp> apps;
   final FairSchedulerInfo fsinfo;
   final Configuration conf;
@@ -137,29 +160,11 @@ public class FairSchedulerAppsBlock extends HtmlBlock {
   }
 
   @Override public void render(Block html) {
-    TBODY<TABLE<Hamlet>> tbody = html.
-      table("#apps").
-        thead().
-          tr().
-            th(".id", "ID").
-            th(".user", "User").
-            th(".name", "Name").
-            th(".type", "Application Type").
-            th(".queue", "Queue").
-            th(".fairshare", "Fair Share").
-            th(".starttime", "StartTime").
-            th(".launchTime", "LaunchTime").
-            th(".finishtime", "FinishTime").
-            th(".state", "State").
-            th(".finalstatus", "FinalStatus").
-            th(".runningcontainer", "Running Containers").
-            th(".allocatedCpu", "Allocated CPU VCores").
-            th(".allocatedMemory", "Allocated Memory MB").
-            th(".reservedCpu", "Reserved CPU VCores").
-            th(".reservedMemory", "Reserved Memory MB").
-            th(".progress", "Progress").
-            th(".ui", "Tracking UI").__().__().
-        tbody();
+    TR<THEAD<TABLE<Hamlet>>> tr = html.table("#apps").thead().tr();
+    for (ColumnHeader col : COLUMNS) {
+      tr = tr.th(col.getSelector(), col.getCData());
+    }
+    TBODY<TABLE<Hamlet>> tbody = tr.__().__().tbody();
     Collection<YarnApplicationState> reqAppStates = null;
     String reqStateString = $(APP_STATE);
     if (reqStateString != null && !reqStateString.isEmpty()) {

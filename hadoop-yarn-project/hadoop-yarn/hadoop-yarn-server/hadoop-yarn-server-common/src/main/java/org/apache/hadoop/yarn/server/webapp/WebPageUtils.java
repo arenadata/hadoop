@@ -55,11 +55,15 @@ public class WebPageUtils {
       boolean isFairSchedulerPage, boolean isResourceManager) {
     // default progress column index is 11
     String progressIndex = "[11]";
+    String dateIndex =
+        isFairSchedulerPage && !isResourceManager ? "[6, 7, 8]" : "[7, 8, 9]";
     StringBuilder sb = new StringBuilder();
     sb.append("[\n")
       .append("{'sType':'natural', 'aTargets': [0], ")
       .append("'mRender': parseHadoopID },\n")
-      .append("{'sType':'num-ignore-str', 'aTargets': [7, 8, 9], ")
+      .append("{'sType':'num-ignore-str', 'aTargets': ")
+      .append(dateIndex)
+      .append(", ")
       .append("'mRender': renderHadoopDate },\n");
     if (isResourceManager) {
       // Update following line if any column added in RM page before column 11
