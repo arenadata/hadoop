@@ -59,24 +59,31 @@ void hdfsThreadDestructor(void *v)
     if (ret != 0) {
       fprintf(stderr, "hdfsThreadDestructor: GetJavaVM failed with error %d\n",
         ret);
-      jthr = (*env)->ExceptionOccurred(env);
-      if (jthr) {
-        (*env)->ExceptionDescribe(env);
-        (*env)->ExceptionClear(env);
-      }
     } else {
-      ret = (*vm)->DetachCurrentThread(vm);
+      /*
+       * When libhdfs is embedded in a host-owned JVM, that JVM detaches this
+       * thread during its own shutdown BEFORE this pthread-key destructor runs,
+       * leaving the cached state->env stale. Any JNI call on it (ExceptionOccurred)
+       * then dereferences a NULL JavaThread and crashes. Only touch the env / detach
+       * when GetEnv confirms this thread is still attached with a live env.
+       */
+      JNIEnv *cur = NULL;
+      if ((*vm)->GetEnv(vm, (void**)&cur, JNI_VERSION_1_8) != JNI_OK || cur == NULL) {
+        /* Already detached (or the VM is shutting down): nothing to detach; do NOT call JNI. */
+      } else {
+        ret = (*vm)->DetachCurrentThread(vm);
 
-      if (ret != JNI_OK) {
-        jthr = (*env)->ExceptionOccurred(env);
-        if (jthr) {
-          (*env)->ExceptionDescribe(env);
-          (*env)->ExceptionClear(env);
+        if (ret != JNI_OK) {
+          jthr = (*env)->ExceptionOccurred(env);
+          if (jthr) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+          }
+          get_current_thread_id(env, thr_name, MAXTHRID);
+
+          fprintf(stderr, "hdfsThreadDestructor: Unable to detach thread %s "
+              "from the JVM. Error code: %d\n", thr_name, ret);
         }
-        get_current_thread_id(env, thr_name, MAXTHRID);
-
-        fprintf(stderr, "hdfsThreadDestructor: Unable to detach thread %s "
-            "from the JVM. Error code: %d\n", thr_name, ret);
       }
     }
   }

@@ -311,6 +311,17 @@ jthrowable methodIdFromClass(jclass cls, const char *className,
     jthr = validateMethodType(env, methType);
     if (jthr)
         return jthr;
+    if (cls == NULL) {
+        /*
+         * A cached jclass can be NULL when the class is not resolvable through the
+         * active classloader (e.g. commons-lang3 ExceptionUtils under an isolated
+         * runtime classloader). GetStaticMethodID/GetMethodID do NOT null-check the
+         * jclass and would dereference it, crashing the JVM. Fail cleanly instead.
+         */
+        return newRuntimeError(env, "methodIdFromClass(%s.%s): class not loaded "
+            "(cached jclass is NULL under the active classloader)",
+            className ? className : "(null)", methName);
+    }
     if (methType == STATIC) {
         mid = (*env)->GetStaticMethodID(env, cls, methName, methSignature);
     }
@@ -879,9 +890,16 @@ static void maybeInitRuntimeClassLoaderLocked(JNIEnv *env)
             jmethodID setc = (*env)->GetMethodID(env, threadCls, "setContextClassLoader",
                                 "(Ljava/lang/ClassLoader;)V");
             if (cur && setc) {
-                gThreadClassRef = (jclass) (*env)->NewGlobalRef(env, threadCls);
-                gCurrentThreadMethod = cur;
-                gSetTcclMethod = setc;
+                /* Keep the three in lockstep. NewGlobalRef can return NULL (OOM) without raising;
+                 * setThreadContextClassLoader gates on the method ids, so a NULL gThreadClassRef with
+                 * valid ids would reach CallStaticObjectMethod on a NULL class. Only commit all three
+                 * once the global ref succeeds. */
+                jclass threadRef = (jclass) (*env)->NewGlobalRef(env, threadCls);
+                if (threadRef) {
+                    gThreadClassRef = threadRef;
+                    gCurrentThreadMethod = cur;
+                    gSetTcclMethod = setc;
+                }
             }
             (*env)->DeleteLocalRef(env, threadCls);
         }
