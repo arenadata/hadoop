@@ -122,9 +122,7 @@ public class DFSPacket {
     if (dataPos + len > buf.length) {
       throw new BufferOverflowException();
     }
-    for (int i = 0; i < len; i++) {
-      buf[dataPos + i] = inBuffer.get();
-    }
+    inBuffer.get(buf, dataPos, len);
     dataPos += len;
   }
 

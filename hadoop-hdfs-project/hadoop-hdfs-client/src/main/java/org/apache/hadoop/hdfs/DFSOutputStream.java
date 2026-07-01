@@ -575,6 +575,9 @@ public class DFSOutputStream extends FSOutputSummer
 
   @Override
   public boolean hasCapability(String capability) {
+    if (StreamCapabilities.WRITEBYTEBUFFER.equalsIgnoreCase(capability)) {
+      return true;
+    }
     return StoreImplementationUtils.isProbeForSyncable(capability);
   }
 

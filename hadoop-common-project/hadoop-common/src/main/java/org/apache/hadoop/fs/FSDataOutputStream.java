@@ -21,6 +21,7 @@ import java.io.DataOutputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -35,10 +36,11 @@ import org.apache.hadoop.fs.statistics.IOStatisticsSupport;
 @InterfaceStability.Stable
 public class FSDataOutputStream extends DataOutputStream
     implements Syncable, CanSetDropBehind, StreamCapabilities,
-      IOStatisticsSource, Abortable {
+      IOStatisticsSource, Abortable, ByteBufferWritable {
   private final OutputStream wrappedStream;
 
-  private static class PositionCache extends FilterOutputStream {
+  private static class PositionCache extends FilterOutputStream
+      implements ByteBufferWritable {
     private final FileSystem.Statistics statistics;
     private long position;
 
@@ -65,7 +67,27 @@ public class FSDataOutputStream extends DataOutputStream
         statistics.incrementBytesWritten(len);
       }
     }
-      
+
+    @Override
+    public void write(ByteBuffer buf) throws IOException {
+      final int len = buf.remaining();
+      if (out instanceof ByteBufferWritable) {
+        // Wrapped stream chooses the direct or drain path per its capability.
+        ((ByteBufferWritable) out).write(buf);
+      } else if (buf.hasArray()) {
+        out.write(buf.array(), buf.arrayOffset() + buf.position(), len);
+        buf.position(buf.limit());
+      } else {
+        byte[] tmp = new byte[len];
+        buf.get(tmp);
+        out.write(tmp, 0, tmp.length);
+      }
+      position += len;                            // update position
+      if (statistics != null) {
+        statistics.incrementBytesWritten(len);
+      }
+    }
+
     long getPos() {
       return position;                            // return cached position
     }
@@ -123,6 +145,26 @@ public class FSDataOutputStream extends DataOutputStream
   @InterfaceAudience.LimitedPrivate({"HDFS"})
   public OutputStream getWrappedStream() {
     return wrappedStream;
+  }
+
+  /**
+   * Write the remaining bytes of the given buffer, advancing its position to
+   * its limit. When the wrapped stream advertises
+   * {@link StreamCapabilities#WRITEBYTEBUFFER} and the buffer is direct, the
+   * bytes are handed to the stream without first being copied onto the Java
+   * heap; otherwise the buffer is drained through the regular {@code byte[]}
+   * write path.
+   *
+   * @param buf the buffer whose remaining bytes are written.
+   * @throws IOException on error.
+   */
+  @Override
+  public synchronized void write(ByteBuffer buf) throws IOException {
+    final int len = buf.remaining();
+    ((PositionCache) out).write(buf);
+    // Track size() like the byte[] write path (saturating at MAX_VALUE).
+    final int temp = written + len;
+    written = temp < 0 ? Integer.MAX_VALUE : temp;
   }
 
   @Override
