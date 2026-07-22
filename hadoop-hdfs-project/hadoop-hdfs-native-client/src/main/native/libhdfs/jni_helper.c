@@ -985,8 +985,11 @@ static JNIEnv* revalidateCachedJNIEnv(JNIEnv *cached)
     JNIEnv *cur = NULL;
     jint rc;
 
-    if (JNI_GetCreatedJavaVMs(&(vmBuf[0]), VM_BUF_LENGTH, &noVMs) != 0 || noVMs == 0) {
-        return cached; /* no VM to consult - keep the prior behavior */
+    if (JNI_GetCreatedJavaVMs(&(vmBuf[0]), VM_BUF_LENGTH, &noVMs) != 0) {
+        return cached; /* cannot consult the VM registry - keep the prior behavior */
+    }
+    if (noVMs == 0) {
+        return NULL; /* the VM is gone - the cached env necessarily dangles */
     }
     rc = (*vmBuf[0])->GetEnv(vmBuf[0], (void**)&cur, JNI_VERSION_1_2);
     if (rc == JNI_OK && cur != NULL) {
