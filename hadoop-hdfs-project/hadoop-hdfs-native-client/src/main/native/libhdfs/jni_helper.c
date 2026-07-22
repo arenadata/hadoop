@@ -972,6 +972,35 @@ jobject hdfsGetRuntimeClassLoader(void)
  *
  * @return          The JNIEnv on success; error code otherwise
  */
+/* A cached JNIEnv is only valid while this thread is still attached to the VM. In an
+ * embedding host a detach can happen behind libhdfs' back (an external
+ * DetachCurrentThread, TLS-destructor ordering at thread exit of a pooled thread); the
+ * stale env then points at a freed JavaThread and the first JNI call (FindClass in
+ * setThreadContextClassLoader) crashes inside SymbolTable::do_lookup. Confirm the
+ * attachment via GetEnv and re-attach instead of trusting the cache. */
+static JNIEnv* revalidateCachedJNIEnv(JNIEnv *cached)
+{
+    JavaVM* vmBuf[VM_BUF_LENGTH];
+    jint noVMs = 0;
+    JNIEnv *cur = NULL;
+    jint rc;
+
+    if (JNI_GetCreatedJavaVMs(&(vmBuf[0]), VM_BUF_LENGTH, &noVMs) != 0 || noVMs == 0) {
+        return cached; /* no VM to consult - keep the prior behavior */
+    }
+    rc = (*vmBuf[0])->GetEnv(vmBuf[0], (void**)&cur, JNI_VERSION_1_2);
+    if (rc == JNI_OK && cur != NULL) {
+        return cur; /* still attached; cur == cached in the common case */
+    }
+    if (rc == JNI_EDETACHED) {
+        if ((*vmBuf[0])->AttachCurrentThread(vmBuf[0], (void**)&cur, NULL) == JNI_OK) {
+            return cur;
+        }
+        fprintf(stderr, "revalidateCachedJNIEnv: re-attach after an external detach failed\n");
+    }
+    return NULL;
+}
+
 static JNIEnv* getGlobalJNIEnv(void)
 {
     JavaVM* vmBuf[VM_BUF_LENGTH]; 
@@ -1121,6 +1150,10 @@ JNIEnv* getJNIEnv(void)
     struct ThreadLocalState *state = NULL;
     THREAD_LOCAL_STORAGE_GET_QUICK(&state);
     if (state) {
+      state->env = revalidateCachedJNIEnv(state->env);
+      if (!state->env) {
+        return NULL;
+      }
       /* Re-assert the context classloader (no-op unless the isolated loader is active), in case
        * the host reset this (possibly pooled) thread's TCCL since the last call. */
       setThreadContextClassLoader(state->env);
@@ -1141,6 +1174,10 @@ JNIEnv* getJNIEnv(void)
       state->lastExceptionRootCause = NULL;
       state->lastExceptionStackTrace = NULL;
 
+      state->env = revalidateCachedJNIEnv(state->env);
+      if (!state->env) {
+        return NULL;
+      }
       setThreadContextClassLoader(state->env);
       return state->env;
     }
