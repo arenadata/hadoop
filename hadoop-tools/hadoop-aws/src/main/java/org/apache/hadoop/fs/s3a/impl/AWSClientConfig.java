@@ -24,6 +24,8 @@ import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
+import javax.net.ssl.TrustManagerFactory;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.awscore.AwsRequest;
@@ -165,11 +167,18 @@ public final class AWSClientConfig {
   /**
    * Create and configure the async http client with timeouts for:
    * connection acquisition, max idle, timeout, TTL, socket and keepalive.
-   * This is netty based and does not allow for the SSL channel mode to be set.
+   * This is netty based, so the SSL channel mode of
+   * {@link NetworkBinding#bindSSLChannelMode(Configuration, ApacheHttpClient.Builder)}
+   * cannot be applied: there is no socket factory to set, which rules out
+   * the OpenSSL acceleration.
+   * A trust store declared in {@code fs.s3a.ssl.truststore} is honoured
+   * however, through the SDK's own {@code tlsTrustManagersProvider}.
    * @param conf The Hadoop configuration
    * @return Async Http client builder
+   * @throws IOException a trust store is configured but cannot be loaded.
    */
-  public static NettyNioAsyncHttpClient.Builder createAsyncHttpClientBuilder(Configuration conf) {
+  public static NettyNioAsyncHttpClient.Builder createAsyncHttpClientBuilder(Configuration conf)
+      throws IOException {
     final ConnectionSettings conn = createConnectionSettings(conf);
 
     NettyNioAsyncHttpClient.Builder httpClientBuilder =
@@ -184,8 +193,14 @@ public final class AWSClientConfig {
             .useIdleConnectionReaper(true)  // true by default in the SDK
             .writeTimeout(conn.getSocketTimeout());
 
-    // TODO: Don't think you can set a socket factory for the netty client.
-    //  NetworkBinding.bindSSLChannelMode(conf, awsConf);
+    // A socket factory cannot be set on the netty client, so the SSL channel
+    // mode (and with it the OpenSSL acceleration) does not apply here.
+    // The trust material can still be installed, through the SDK's own API.
+    final TrustManagerFactory tmf =
+        NetworkBinding.createTrustManagerFactory(conf);
+    if (tmf != null) {
+      httpClientBuilder.tlsTrustManagersProvider(tmf::getTrustManagers);
+    }
 
     return httpClientBuilder;
   }

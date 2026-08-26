@@ -231,11 +231,34 @@ public final class Constants {
       DEFAULT_SSL_CHANNEL_MODE =
           DelegatingSSLSocketFactory.SSLChannelMode.Default_JSSE;
 
+  /**
+   * Path of a trust store holding the certificate authorities to trust when
+   * connecting to the S3 endpoint: {@value}.
+   * When unset, the JVM default trust store is used.
+   * Note that the trust store is installed into a JVM-wide, first-write-wins
+   * socket factory: only one can be active per process.
+   */
   public static final String SSL_TRUSTSTORE = "fs.s3a.ssl.truststore";
-  public static final String SSL_TRUSTSTORE_PASSWORD = "fs.s3a.ssl.truststore.password";
-  public static final String SSL_TRUSTSTORE_CREDENTIAL_FILE = "fs.s3a.ssl.truststore.credential.file";
-  public static final String SSL_TRUSTSTORE_CREDENTIAL_ALIAS = "sslTrustStore";
+
+  /**
+   * Password of the trust store named in {@link #SSL_TRUSTSTORE}: {@value}.
+   * Resolved through the Hadoop credential providers, so it may be stored in
+   * a JCEKS file rather than in XML.
+   * If no password is set the trust store is loaded without its integrity
+   * check being verified.
+   */
+  public static final String SSL_TRUSTSTORE_PASSWORD =
+      "fs.s3a.ssl.truststore.password";
+
+  /**
+   * Type of the trust store named in {@link #SSL_TRUSTSTORE}: {@value}.
+   * Default is {@link #SSL_TRUSTSTORE_TYPE_DEFAULT}.
+   */
   public static final String SSL_TRUSTSTORE_TYPE = "fs.s3a.ssl.truststore.type";
+
+  /**
+   * Default trust store type: {@value}.
+   */
   public static final String SSL_TRUSTSTORE_TYPE_DEFAULT = "jks";
 
   /**

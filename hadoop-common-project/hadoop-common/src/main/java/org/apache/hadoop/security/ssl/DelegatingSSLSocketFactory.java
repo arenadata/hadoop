@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.security.KeyManagementException;
-import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.logging.Level;
@@ -30,6 +29,7 @@ import java.util.logging.Level;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 
 import org.apache.hadoop.classification.VisibleForTesting;
@@ -87,6 +87,28 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
   private static DelegatingSSLSocketFactory instance = null;
   private static final Logger LOG = LoggerFactory.getLogger(
           DelegatingSSLSocketFactory.class);
+
+  /**
+   * Opaque descriptor of the trust material {@link #instance} was built from,
+   * as supplied by whoever initialized the factory; null if it was initialized
+   * with no explicit trust material.
+   */
+  private static String instanceTrustConfigId = null;
+
+  /**
+   * Has the "trust material is installed but this caller did not ask for it"
+   * warning already been logged? This guards against unbounded logging:
+   * ABFS initializes the factory on every HTTPS connection.
+   */
+  private static boolean trustConfigMismatchWarned = false;
+
+  /**
+   * Trust configuration of the last discarded request which was warned
+   * about, so that repeating the same request stays quiet. A single binding
+   * initializes the factory more than once.
+   */
+  private static String lastWarnedTrustConfigId = null;
+
   private String providerName;
   private SSLContext ctx;
   private String[] ciphers;
@@ -99,26 +121,66 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
   /**
    * Initialize a singleton SSL socket factory.
    *
+   * The factory is JVM-wide and first-write-wins: once it has been
+   * initialized, later calls are ignored. A call which asks for trust
+   * material other than the one already in use is logged at WARN, as its
+   * request is silently discarded.
+   *
    * @param preferredMode applicable only if the instance is not initialized.
-   * @param tmf applicable only if the instance is not initialized.
+   * @param tmf trust managers to install, or null for the JVM defaults.
+   *            Applicable only if the instance is not initialized.
+   * @param trustConfigId opaque identifier of the trust material behind
+   *                      {@code tmf}, used to detect conflicting requests.
+   *                      Must be null when {@code tmf} is null.
    * @throws IOException if an error occurs.
    */
   public static synchronized void initializeDefaultFactory(
-      SSLChannelMode preferredMode, TrustManagerFactory tmf) throws IOException {
+      SSLChannelMode preferredMode,
+      TrustManagerFactory tmf,
+      String trustConfigId) throws IOException {
     if (instance == null) {
       instance = new DelegatingSSLSocketFactory(preferredMode, tmf);
+      instanceTrustConfigId = trustConfigId;
+      return;
     }
+    warnOnDiscardedTrustConfig(trustConfigId);
   }
 
   /**
-   * Initialize a singleton SSL socket factory.
+   * Initialize a singleton SSL socket factory with no explicit trust material.
    *
    * @param preferredMode applicable only if the instance is not initialized.
    * @throws IOException if an error occurs.
    */
   public static synchronized void initializeDefaultFactory(
-          SSLChannelMode preferredMode) throws IOException {
-    initializeDefaultFactory(preferredMode, null);
+      SSLChannelMode preferredMode) throws IOException {
+    initializeDefaultFactory(preferredMode, null, null);
+  }
+
+  /**
+   * Warn when an initialization request is discarded because the JVM-wide
+   * factory already exists and was built from different trust material.
+   * @param trustConfigId trust configuration of the discarded request.
+   */
+  private static void warnOnDiscardedTrustConfig(String trustConfigId) {
+    if (trustConfigId != null) {
+      if (!trustConfigId.equals(instanceTrustConfigId)
+          && !trustConfigId.equals(lastWarnedTrustConfigId)) {
+        lastWarnedTrustConfigId = trustConfigId;
+        LOG.warn("The JVM-wide SSL socket factory is already initialized with"
+                + " trust configuration [{}]; the request for [{}] is ignored."
+                + " Only one trust store can be active per JVM process.",
+            instanceTrustConfigId == null
+                ? "the JVM default trust store" : instanceTrustConfigId,
+            trustConfigId);
+      }
+    } else if (instanceTrustConfigId != null && !trustConfigMismatchWarned) {
+      trustConfigMismatchWarned = true;
+      LOG.warn("The JVM-wide SSL socket factory was initialized with trust"
+              + " configuration [{}]; connections which did not ask for it"
+              + " will use those trust anchors and not the JVM defaults.",
+          instanceTrustConfigId);
+    }
   }
 
   /**
@@ -128,6 +190,9 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
   public static synchronized void resetDefaultFactory() {
     LOG.info("Resetting default SSL Socket Factory");
     instance = null;
+    instanceTrustConfigId = null;
+    trustConfigMismatchWarned = false;
+    lastWarnedTrustConfigId = null;
   }
 
   /**
@@ -143,20 +208,11 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
     return instance;
   }
 
-  private DelegatingSSLSocketFactory(SSLChannelMode preferredChannelMode)
-      throws IOException {
-    this(preferredChannelMode, null);
-  }
-
-  private DelegatingSSLSocketFactory(SSLChannelMode preferredChannelMode, TrustManagerFactory tmf)
-          throws IOException {
+  private DelegatingSSLSocketFactory(SSLChannelMode preferredChannelMode,
+      TrustManagerFactory tmf) throws IOException {
     try {
-      if (tmf != null) {
-        initializeSSLContextWithTrustManager(preferredChannelMode, tmf);
-      } else {
-        initializeSSLContext(preferredChannelMode);
-      }
-    } catch (NoSuchAlgorithmException | KeyManagementException | KeyStoreException e) {
+      initializeSSLContext(preferredChannelMode, tmf);
+    } catch (NoSuchAlgorithmException | KeyManagementException e) {
       throw new IOException(e);
     }
 
@@ -173,34 +229,44 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
         + ctx.getProvider().getVersion();
   }
 
-  private void initializeSSLContext(SSLChannelMode preferredChannelMode)
+  /**
+   * Initialize {@link #ctx} for the requested channel mode.
+   * @param preferredChannelMode the requested channel mode.
+   * @param tmf trust managers to install, or null to use the JVM defaults.
+   * @throws NoSuchAlgorithmException no such algorithm.
+   * @throws KeyManagementException failure to initialize the context.
+   * @throws IOException unknown channel mode.
+   */
+  private void initializeSSLContext(SSLChannelMode preferredChannelMode,
+      TrustManagerFactory tmf)
       throws NoSuchAlgorithmException, KeyManagementException, IOException {
-    LOG.debug("Initializing SSL Context to channel mode {}",
-        preferredChannelMode);
+    LOG.debug("Initializing SSL Context to channel mode {} {} TrustManagerFactory",
+        preferredChannelMode, tmf != null ? "with a" : "without a");
     switch (preferredChannelMode) {
     case Default:
       try {
         bindToOpenSSLProvider();
-        ctx.init(null, null, null);
+        ctx.init(null, trustManagers(tmf), null);
         channelMode = SSLChannelMode.OpenSSL;
-      } catch (LinkageError | NoSuchAlgorithmException | RuntimeException e) {
+      } catch (LinkageError | NoSuchAlgorithmException
+          | KeyManagementException | RuntimeException e) {
         LOG.debug("Failed to load OpenSSL. Falling back to the JSSE default.",
             e);
-        ctx = SSLContext.getDefault();
+        initializeJSSEContext(tmf);
         channelMode = SSLChannelMode.Default_JSSE;
       }
       break;
     case OpenSSL:
       bindToOpenSSLProvider();
-      ctx.init(null, null, null);
+      ctx.init(null, trustManagers(tmf), null);
       channelMode = SSLChannelMode.OpenSSL;
       break;
     case Default_JSSE:
-      ctx = SSLContext.getDefault();
+      initializeJSSEContext(tmf);
       channelMode = SSLChannelMode.Default_JSSE;
       break;
     case Default_JSSE_with_GCM:
-      ctx = SSLContext.getDefault();
+      initializeJSSEContext(tmf);
       channelMode = SSLChannelMode.Default_JSSE_with_GCM;
       break;
     default:
@@ -209,43 +275,34 @@ public final class DelegatingSSLSocketFactory extends SSLSocketFactory {
     }
   }
 
-  private void initializeSSLContextWithTrustManager(SSLChannelMode preferredChannelMode, TrustManagerFactory tmf)
-          throws NoSuchAlgorithmException, KeyManagementException, IOException, KeyStoreException {
-    LOG.debug("Initializing SSL Context to channel mode {} with TrustManagerFactory",
-            preferredChannelMode);
-    switch (preferredChannelMode) {
-      case Default:
-        try {
-          bindToOpenSSLProvider();
-          ctx.init(null, tmf.getTrustManagers(), null);
-          channelMode = SSLChannelMode.OpenSSL;
-        } catch (LinkageError | NoSuchAlgorithmException | RuntimeException e) {
-          LOG.debug("Failed to load OpenSSL. Falling back to the JSSE default.",
-                  e);
-          ctx = SSLContext.getInstance("TLS");
-          ctx.init(null, tmf.getTrustManagers(), null);
-          channelMode = SSLChannelMode.Default_JSSE;
-        }
-        break;
-      case OpenSSL:
-        bindToOpenSSLProvider();
-        ctx.init(null, tmf.getTrustManagers(), null);
-        channelMode = SSLChannelMode.OpenSSL;
-        break;
-      case Default_JSSE:
-        ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, tmf.getTrustManagers(), null);
-        channelMode = SSLChannelMode.Default_JSSE;
-        break;
-      case Default_JSSE_with_GCM:
-        ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, tmf.getTrustManagers(), null);
-        channelMode = SSLChannelMode.Default_JSSE_with_GCM;
-        break;
-      default:
-        throw new IOException("Unknown channel mode: "
-                + preferredChannelMode);
+  /**
+   * Point {@link #ctx} at a JSSE context.
+   * With no trust material the shared {@link SSLContext#getDefault()} is used,
+   * exactly as before this method existed. That context comes back already
+   * initialized and calling {@code init()} on it throws
+   * {@link KeyManagementException}, so a fresh context has to be created
+   * whenever trust managers must be installed.
+   * @param tmf trust managers to install, or null to use the JVM defaults.
+   * @throws NoSuchAlgorithmException no such algorithm.
+   * @throws KeyManagementException failure to initialize the context.
+   */
+  private void initializeJSSEContext(TrustManagerFactory tmf)
+      throws NoSuchAlgorithmException, KeyManagementException {
+    if (tmf == null) {
+      ctx = SSLContext.getDefault();
+    } else {
+      ctx = SSLContext.getInstance("TLS");
+      ctx.init(null, tmf.getTrustManagers(), null);
     }
+  }
+
+  /**
+   * Extract the trust managers of a factory.
+   * @param tmf the factory, or null.
+   * @return the trust managers, or null to use the JVM defaults.
+   */
+  private static TrustManager[] trustManagers(TrustManagerFactory tmf) {
+    return tmf == null ? null : tmf.getTrustManagers();
   }
 
   /**

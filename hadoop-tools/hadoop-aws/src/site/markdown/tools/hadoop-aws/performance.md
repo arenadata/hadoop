@@ -730,6 +730,10 @@ in Java 9, so if `default_jsse` is specified and applications run on Java
 includes GCM in the list of cipher suites on Java 8, so it is equivalent to
 running with the vanilla JSSE.
 
+Note that `fs.s3a.ssl.channel.mode` only selects the TLS implementation; to
+change which certificate authorities are trusted, see
+[Custom Trust Store](connecting.html#truststore).
+
 ### <a name="openssl"></a> OpenSSL Acceleration
 
 As of HADOOP-16050 and HADOOP-16346, `fs.s3a.ssl.channel.mode` can be set to

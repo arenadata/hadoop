@@ -1800,6 +1800,41 @@
 </property>
 
 <property>
+  <name>fs.s3a.ssl.truststore</name>
+  <value></value>
+  <description>
+    Path of a trust store holding the certificate authorities to trust when
+    connecting to the S3 endpoint over HTTPS. When unset, the JVM default
+    trust store is used.
+    The trust store is installed into a process-wide SSL socket factory
+    shared with the ABFS connector, on a first-write-wins basis: only one
+    trust store can be active per JVM process, and a conflicting
+    configuration is logged at WARN and discarded.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.ssl.truststore.type</name>
+  <value>jks</value>
+  <description>
+    Type of the trust store declared in fs.s3a.ssl.truststore,
+    for example "jks" or "pkcs12".
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.ssl.truststore.password</name>
+  <value></value>
+  <description>
+    Password of the trust store declared in fs.s3a.ssl.truststore.
+    Resolved through the Hadoop credential providers, so it should normally
+    be declared with "hadoop credential create" rather than in XML.
+    If no password is declared the trust store is still loaded, but its
+    integrity is not verified.
+  </description>
+</property>
+
+<property>
   <name>fs.s3a.socket.send.buffer</name>
   <value>8192</value>
   <description>Socket send buffer hint to amazon connector. Represented in bytes.</description>

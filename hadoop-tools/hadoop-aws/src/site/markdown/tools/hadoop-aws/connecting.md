@@ -285,6 +285,125 @@ Core aspects of pool settings are:
 </property>
 ```
 
+### <a name="truststore"></a> Custom Trust Store
+
+When the S3 endpoint presents a certificate issued by a private Certificate
+Authority, that CA is not in the JVM's default trust store and every HTTPS
+request fails with `PKIX path building failed`. Rather than modifying the
+JVM-wide `cacerts` file, S3A can be pointed at its own trust store.
+
+```xml
+<property>
+  <name>fs.s3a.ssl.truststore</name>
+  <value>/etc/hadoop/conf/s3-truststore.jks</value>
+  <description>
+    Path of a trust store holding the certificate authorities to trust when
+    connecting to the S3 endpoint. When unset, the JVM default trust store
+    is used.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.ssl.truststore.type</name>
+  <value>jks</value>
+  <description>
+    Type of the trust store: jks, pkcs12, ...
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.ssl.truststore.password</name>
+  <value>secret</value>
+  <description>
+    Password of the trust store. Prefer declaring this through a Hadoop
+    credential provider rather than in XML.
+  </description>
+</property>
+```
+
+The trust store type defaults to `jks`. A PKCS#12 trust store, which is what
+recent JDK versions produce by default, must declare
+`fs.s3a.ssl.truststore.type` explicitly:
+
+```xml
+<property>
+  <name>fs.s3a.ssl.truststore.type</name>
+  <value>pkcs12</value>
+</property>
+```
+
+#### Declaring the password through a credential provider
+
+The password is resolved through the same mechanism as every other S3A
+secret, so it does not have to appear in XML:
+
+```bash
+hadoop credential create fs.s3a.ssl.truststore.password \
+  -provider jceks://file/etc/hadoop/conf/s3a.jceks
+```
+
+The credential file is then declared through either the standard
+`hadoop.security.credential.provider.path`, or the S3A-scoped
+`fs.s3a.security.credential.provider.path`, which also supports a per-bucket
+form:
+
+```xml
+<property>
+  <name>fs.s3a.bucket.private-store.security.credential.provider.path</name>
+  <value>jceks://file/etc/hadoop/conf/s3a.jceks</value>
+</property>
+```
+
+All three trust store options support the usual per-bucket override, for
+example `fs.s3a.bucket.private-store.ssl.truststore`.
+
+If no password is declared at all the trust store is still loaded, but for a
+JKS store the JVM then skips the integrity (MAC) check on the file. This is
+logged at WARN. Declare a password whenever the store has one.
+
+#### Only one trust store per JVM process
+
+The trust store is installed into a process-wide SSL socket factory which is
+shared with the ABFS connector, and it is initialized once, on a
+first-write-wins basis. Consequences:
+
+* Two buckets in the same process cannot use different trust stores. The
+  first filesystem to be initialized wins, and every other bucket in that
+  process uses its trust anchors.
+* If ABFS, or an S3A bucket with no trust store configured, initializes the
+  factory first, then `fs.s3a.ssl.truststore` has no effect at all in that
+  process.
+
+Both situations are logged at WARN, naming the trust configuration which is
+in use and the one which was discarded. If you see that warning, the trust
+store you configured is not the one being used.
+
+#### The asynchronous S3 client
+
+Two S3A operations do not go through the Apache HTTP client, but through the
+Netty-based asynchronous client behind the S3 Transfer Manager:
+
+| Operation | Entry point | Notes |
+|-----------|-------------|-------|
+| `rename()`, and the server-side copy behind it | `S3AFileSystem.copyFile()` -> `S3TransferManager.copy()` | Also reached by job committers which rename output into place |
+| `copyFromLocalFile()` | `CopyFromLocalOperation` -> `S3TransferManager.uploadFile()` | This is `hadoop fs -put` / `-copyFromLocal` / `-moveFromLocal`. Set `fs.s3a.optimized.copy.from.local.enabled` to `false` to route it through the ordinary output stream instead |
+
+Everything else — reads (all stream types, including `prefetch` and
+`analytics`), output-stream writes, multipart uploads, `listStatus`, `delete`,
+`getFileStatus` — uses the Apache HTTP client.
+
+The trust store is honoured on both. The asynchronous client has no socket
+factory to install, so it is given the trust managers directly through the
+SDK's `tlsTrustManagersProvider`. One consequence of that difference is worth
+knowing: the asynchronous client is built per filesystem instance, not from
+the process-wide socket factory, so it is *not* subject to the
+one-trust-store-per-JVM restriction described above.
+
+What cannot be applied to the asynchronous client is the SSL *channel mode*:
+`fs.s3a.ssl.channel.mode` selects an `SSLSocketFactory`, and there is none to
+set, so the OpenSSL acceleration never covers rename/copy or
+`copyFromLocalFile`. Those operations always use the JSSE.
+
 ### <a name="proxies"></a> Proxy Settings
 
 Connections to S3A stores can be made through an HTTP or HTTPS proxy.

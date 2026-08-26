@@ -37,22 +37,14 @@ public class ConfigureShadedAWSSocketFactory implements
 
   @Override
   public void configureSocketFactory(final ApacheHttpClient.Builder httpClientBuilder,
-      final DelegatingSSLSocketFactory.SSLChannelMode channelMode)
+      final DelegatingSSLSocketFactory.SSLChannelMode channelMode,
+      final TrustManagerFactory tmf,
+      final String trustConfigId)
       throws IOException {
-    DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode);
+    DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode, tmf,
+        trustConfigId);
     httpClientBuilder.socketFactory(new SSLConnectionSocketFactory(
         DelegatingSSLSocketFactory.getDefaultFactory(),
         (HostnameVerifier) null));
-  }
-
-  @Override
-  public void configureSocketFactory(final ApacheHttpClient.Builder httpClientBuilder,
-                                     final DelegatingSSLSocketFactory.SSLChannelMode channelMode,
-                                     final TrustManagerFactory tmf)
-          throws IOException {
-    DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode, tmf);
-    httpClientBuilder.socketFactory(new SSLConnectionSocketFactory(
-            DelegatingSSLSocketFactory.getDefaultFactory(),
-            (HostnameVerifier) null));
   }
 }
