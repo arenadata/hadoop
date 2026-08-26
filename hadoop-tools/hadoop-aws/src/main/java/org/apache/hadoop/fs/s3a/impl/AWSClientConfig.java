@@ -138,14 +138,15 @@ public final class AWSClientConfig {
    * Create and configure the http client-based connector with timeouts for:
    * connection acquisition, max idle, timeout, TTL, socket and keepalive.
    * SSL channel mode is set up via
-   * {@link NetworkBinding#bindSSLChannelMode(Configuration, ApacheHttpClient.Builder)}.
+   * {@link NetworkBinding#bindSSLChannelMode(Configuration, ApacheHttpClient.Builder, String)}.
    *
    * @param conf The Hadoop configuration
+   * @param bucket the bucket the client is created for, or "" if unknown
    * @return Http client builder
    * @throws IOException on any problem
    */
-  public static ApacheHttpClient.Builder createHttpClientBuilder(Configuration conf)
-      throws IOException {
+  public static ApacheHttpClient.Builder createHttpClientBuilder(Configuration conf,
+      String bucket) throws IOException {
     final ConnectionSettings conn = createConnectionSettings(conf);
     ApacheHttpClient.Builder httpClientBuilder =
         ApacheHttpClient.builder()
@@ -159,7 +160,7 @@ public final class AWSClientConfig {
             .tcpKeepAlive(conn.isKeepAlive())
             .useIdleConnectionReaper(true);  // true by default in the SDK
 
-    NetworkBinding.bindSSLChannelMode(conf, httpClientBuilder);
+    NetworkBinding.bindSSLChannelMode(conf, httpClientBuilder, bucket);
 
     return httpClientBuilder;
   }
@@ -168,17 +169,18 @@ public final class AWSClientConfig {
    * Create and configure the async http client with timeouts for:
    * connection acquisition, max idle, timeout, TTL, socket and keepalive.
    * This is netty based, so the SSL channel mode of
-   * {@link NetworkBinding#bindSSLChannelMode(Configuration, ApacheHttpClient.Builder)}
+   * {@link NetworkBinding#bindSSLChannelMode(Configuration, ApacheHttpClient.Builder, String)}
    * cannot be applied: there is no socket factory to set, which rules out
    * the OpenSSL acceleration.
    * A trust store declared in {@code fs.s3a.ssl.truststore} is honoured
    * however, through the SDK's own {@code tlsTrustManagersProvider}.
    * @param conf The Hadoop configuration
+   * @param bucket the bucket the client is created for, or "" if unknown
    * @return Async Http client builder
    * @throws IOException a trust store is configured but cannot be loaded.
    */
-  public static NettyNioAsyncHttpClient.Builder createAsyncHttpClientBuilder(Configuration conf)
-      throws IOException {
+  public static NettyNioAsyncHttpClient.Builder createAsyncHttpClientBuilder(Configuration conf,
+      String bucket) throws IOException {
     final ConnectionSettings conn = createConnectionSettings(conf);
 
     NettyNioAsyncHttpClient.Builder httpClientBuilder =
@@ -197,7 +199,7 @@ public final class AWSClientConfig {
     // mode (and with it the OpenSSL acceleration) does not apply here.
     // The trust material can still be installed, through the SDK's own API.
     final TrustManagerFactory tmf =
-        NetworkBinding.createTrustManagerFactory(conf);
+        NetworkBinding.createTrustManagerFactory(conf, bucket);
     if (tmf != null) {
       httpClientBuilder.tlsTrustManagersProvider(tmf::getTrustManagers);
     }

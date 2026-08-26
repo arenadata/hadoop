@@ -102,7 +102,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
     Configuration conf = new Configuration(false);
     conf.set(SSL_CHANNEL_MODE, "no-such-mode ");
     intercept(IllegalArgumentException.class, () ->
-        bindSSLChannelMode(conf, ApacheHttpClient.builder()));
+        bindSSLChannelMode(conf, ApacheHttpClient.builder(), ""));
   }
 
   @Test
@@ -171,7 +171,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
     DelegatingSSLSocketFactory.resetDefaultFactory();
     Configuration conf = new Configuration(false);
     conf.set(SSL_CHANNEL_MODE, channelMode.name());
-    bindSSLChannelMode(conf, ApacheHttpClient.builder());
+    bindSSLChannelMode(conf, ApacheHttpClient.builder(), "");
     return DelegatingSSLSocketFactory.getDefaultFactory().getChannelMode();
   }
 
@@ -245,6 +245,41 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
   }
 
   /**
+   * The password may be declared as a bucket-scoped alias in a credential
+   * provider, the usual way to hold a genuinely per-bucket secret. Bucket
+   * options which live only in a provider are invisible to
+   * {@code S3AUtils.propagateBucketOptions()}, so this resolves only when the
+   * bucket name reaches the lookup itself.
+   * <p>
+   * The generic key deliberately carries the wrong password here: if the
+   * bucket-scoped alias is not consulted, that wrong password reaches
+   * {@code KeyStore.load()} and the binding fails.
+   */
+  @Test
+  public void testTrustStorePasswordFromBucketScopedAlias() throws Throwable {
+    String bucket = "private-store";
+    Configuration conf = confWithTrustStore(
+        createTrustStore("bucket-alias.jks", TRUSTSTORE_PASSWORD),
+        "not-the-password");
+    File jceks = tempDir.newFile("bucket-alias.jceks");
+    URI providerUri =
+        ProviderUtils.nestURIForLocalJavaKeyStoreProvider(jceks.toURI());
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        providerUri.toString());
+    CredentialProvider provider =
+        CredentialProviderFactory.getProviders(conf).get(0);
+    provider.createCredentialEntry(
+        "fs.s3a.bucket." + bucket + ".ssl.truststore.password",
+        TRUSTSTORE_PASSWORD.toCharArray());
+    provider.flush();
+
+    assertThat(bindWithTrustStore(conf, bucket))
+        .describedAs("Channel mode of the factory built from the bucket-scoped"
+            + " alias of %s", SSL_TRUSTSTORE_PASSWORD)
+        .isEqualTo(Default_JSSE);
+  }
+
+  /**
    * A missing trust store must fail with an error naming the option which
    * declared it, not a bare FileNotFoundException.
    */
@@ -254,7 +289,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
         new File(tempDir.getRoot(), "no-such-file.jks"), TRUSTSTORE_PASSWORD);
     DelegatingSSLSocketFactory.resetDefaultFactory();
     intercept(IOException.class, SSL_TRUSTSTORE, () ->
-        bindSSLChannelMode(conf, ApacheHttpClient.builder()));
+        bindSSLChannelMode(conf, ApacheHttpClient.builder(), ""));
   }
 
   /**
@@ -268,7 +303,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
         "not-the-password");
     DelegatingSSLSocketFactory.resetDefaultFactory();
     intercept(IOException.class, SSL_TRUSTSTORE, () ->
-        bindSSLChannelMode(conf, ApacheHttpClient.builder()));
+        bindSSLChannelMode(conf, ApacheHttpClient.builder(), ""));
   }
 
   /**
@@ -301,7 +336,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
         createTrustStore("second.jks", TRUSTSTORE_PASSWORD),
         TRUSTSTORE_PASSWORD);
     // deliberately no resetDefaultFactory() between the two bindings
-    bindSSLChannelMode(second, ApacheHttpClient.builder());
+    bindSSLChannelMode(second, ApacheHttpClient.builder(), "");
 
     assertThat(DelegatingSSLSocketFactory.getDefaultFactory())
         .describedAs("Factory after a second binding with a different"
@@ -321,7 +356,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
         createTrustStore("async.jks", TRUSTSTORE_PASSWORD),
         TRUSTSTORE_PASSWORD);
 
-    TrustManagerFactory tmf = NetworkBinding.createTrustManagerFactory(conf);
+    TrustManagerFactory tmf = NetworkBinding.createTrustManagerFactory(conf, "");
     assertThat(tmf)
         .describedAs("Trust managers built for the async client")
         .isNotNull();
@@ -329,7 +364,7 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
         .describedAs("Trust managers of %s", tmf)
         .isNotEmpty();
 
-    assertThat(AWSClientConfig.createAsyncHttpClientBuilder(conf))
+    assertThat(AWSClientConfig.createAsyncHttpClientBuilder(conf, ""))
         .describedAs("Async http client builder with a trust store")
         .isNotNull();
   }
@@ -341,10 +376,10 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
   @Test
   public void testAsyncClientWithoutTrustStore() throws Throwable {
     Configuration conf = new Configuration(false);
-    assertThat(NetworkBinding.createTrustManagerFactory(conf))
+    assertThat(NetworkBinding.createTrustManagerFactory(conf, ""))
         .describedAs("Trust managers with no trust store configured")
         .isNull();
-    assertThat(AWSClientConfig.createAsyncHttpClientBuilder(conf))
+    assertThat(AWSClientConfig.createAsyncHttpClientBuilder(conf, ""))
         .describedAs("Async http client builder with no trust store")
         .isNotNull();
   }
@@ -387,8 +422,20 @@ public class TestWildflyAndOpenSSLBinding extends AbstractHadoopTestBase {
    */
   private DelegatingSSLSocketFactory.SSLChannelMode bindWithTrustStore(
       Configuration conf) throws IOException {
+    return bindWithTrustStore(conf, "");
+  }
+
+  /**
+   * Reset the factory and bind it from the given configuration, as the
+   * filesystem of a given bucket.
+   * @param conf configuration to bind from.
+   * @param bucket bucket the binding is for.
+   * @return the channel mode of the resulting factory.
+   */
+  private DelegatingSSLSocketFactory.SSLChannelMode bindWithTrustStore(
+      Configuration conf, String bucket) throws IOException {
     DelegatingSSLSocketFactory.resetDefaultFactory();
-    bindSSLChannelMode(conf, ApacheHttpClient.builder());
+    bindSSLChannelMode(conf, ApacheHttpClient.builder(), bucket);
     return DelegatingSSLSocketFactory.getDefaultFactory().getChannelMode();
   }
 

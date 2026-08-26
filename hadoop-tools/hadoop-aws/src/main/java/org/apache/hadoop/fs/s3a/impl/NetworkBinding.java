@@ -66,19 +66,20 @@ public final class NetworkBinding {
    * Load the trust store named by {@code fs.s3a.ssl.truststore}, if set,
    * and build a {@link TrustManagerFactory} from it.
    * @param conf the configuration of the filesystem.
+   * @param bucket the bucket the filesystem is bound to, or "" if unknown.
    * @return the binding; {@link TrustStoreBinding#NONE} if no trust store
    *         is configured.
    * @throws IOException the trust store is configured but cannot be loaded.
    */
   private static TrustStoreBinding loadTrustStore(
-      Configuration conf) throws IOException {
+      Configuration conf, String bucket) throws IOException {
     String trustStorePath = conf.getTrimmed(SSL_TRUSTSTORE, "");
     if (trustStorePath.isEmpty()) {
       return TrustStoreBinding.NONE;
     }
     String trustStoreType =
         conf.getTrimmed(SSL_TRUSTSTORE_TYPE, SSL_TRUSTSTORE_TYPE_DEFAULT);
-    char[] password = lookupTrustStorePassword(conf, trustStorePath);
+    char[] password = lookupTrustStorePassword(conf, bucket, trustStorePath);
     try {
       KeyStore trustStore = KeyStore.getInstance(trustStoreType);
       try (InputStream instream = Files.newInputStream(
@@ -106,16 +107,19 @@ public final class NetworkBinding {
    * resolution path, which covers plain XML values, per-bucket overrides and
    * Hadoop credential providers.
    * @param conf the configuration of the filesystem.
+   * @param bucket the bucket the filesystem is bound to, or "" if unknown.
    * @param trustStorePath path of the trust store, for the log message.
    * @return the password, or null if none is configured.
    * @throws IOException failure to read a credential provider.
    */
   private static char[] lookupTrustStorePassword(Configuration conf,
-      String trustStorePath) throws IOException {
-    // the bucket is empty as bucket overrides have already been propagated
-    // into this configuration by S3AUtils.propagateBucketOptions().
+      String bucket, String trustStorePath) throws IOException {
+    // the bucket has to be passed in rather than relying on
+    // S3AUtils.propagateBucketOptions(): that only rewrites values which are
+    // present in the configuration, so a bucket-scoped alias held solely in a
+    // credential provider is reachable only through the bucket-aware lookup.
     String password =
-        S3AUtils.lookupPassword("", conf, SSL_TRUSTSTORE_PASSWORD);
+        S3AUtils.lookupPassword(bucket, conf, SSL_TRUSTSTORE_PASSWORD);
     if (password == null || password.isEmpty()) {
       LOG.warn("No password declared in {}: the integrity of the trust store"
               + " {} will not be verified when it is loaded",
@@ -143,16 +147,17 @@ public final class NetworkBinding {
    * install the trust managers themselves; the Netty-based asynchronous
    * client is the only such client today.
    * <p>
-   * Unlike {@link #bindSSLChannelMode(Configuration, ApacheHttpClient.Builder)}
-   * this does not go through the JVM-wide socket factory, so each client gets
-   * the trust store declared in its own configuration.
+   * Unlike {@link #bindSSLChannelMode(Configuration, ApacheHttpClient.Builder,
+   * String)} this does not go through the JVM-wide socket factory, so each
+   * client gets the trust store declared in its own configuration.
    * @param conf the configuration of the filesystem.
+   * @param bucket the bucket the filesystem is bound to, or "" if unknown.
    * @return the trust managers, or null if no trust store is configured.
    * @throws IOException the trust store is configured but cannot be loaded.
    */
   public static TrustManagerFactory createTrustManagerFactory(
-      Configuration conf) throws IOException {
-    return loadTrustStore(conf).factory;
+      Configuration conf, String bucket) throws IOException {
+    return loadTrustStore(conf, bucket).factory;
   }
 
   /**
@@ -164,11 +169,14 @@ public final class NetworkBinding {
    * @param conf the {@link Configuration} used to get the client specified
    *             value of {@code SSL_CHANNEL_MODE}
    * @param httpClientBuilder the http client builder.
+   * @param bucket the bucket the filesystem is bound to, or "" if unknown;
+   *               used to resolve a bucket-scoped trust store password.
    * @throws IOException if there is an error while initializing the
    * {@code SSLSocketFactory} other than classloader problems.
    */
   public static void bindSSLChannelMode(Configuration conf,
-      ApacheHttpClient.Builder httpClientBuilder) throws IOException {
+      ApacheHttpClient.Builder httpClientBuilder, String bucket)
+      throws IOException {
 
     // Validate that SSL_CHANNEL_MODE is set to a valid value.
     String channelModeString = conf.getTrimmed(
@@ -185,7 +193,7 @@ public final class NetworkBinding {
               " is not a valid value for " + SSL_CHANNEL_MODE);
     }
 
-    TrustStoreBinding trustStore = loadTrustStore(conf);
+    TrustStoreBinding trustStore = loadTrustStore(conf, bucket);
 
     // initialize the factory here, outside the try/catch below, so that
     // failures to bind (missing wildfly, bad trust material) surface to the

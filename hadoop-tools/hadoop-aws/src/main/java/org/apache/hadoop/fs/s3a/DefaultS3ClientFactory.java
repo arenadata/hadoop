@@ -133,7 +133,7 @@ public class DefaultS3ClientFactory extends Configured
     String bucket = uri.getHost();
 
     ApacheHttpClient.Builder httpClientBuilder = AWSClientConfig
-        .createHttpClientBuilder(conf)
+        .createHttpClientBuilder(conf, bucket)
         .proxyConfiguration(AWSClientConfig.createProxyConfiguration(conf, bucket));
     return configureClientBuilder(S3Client.builder(), parameters, conf, bucket)
         .httpClientBuilder(httpClientBuilder)
@@ -149,7 +149,7 @@ public class DefaultS3ClientFactory extends Configured
     String bucket = uri.getHost();
 
     NettyNioAsyncHttpClient.Builder httpClientBuilder = AWSClientConfig
-        .createAsyncHttpClientBuilder(conf)
+        .createAsyncHttpClientBuilder(conf, bucket)
         .proxyConfiguration(AWSClientConfig.createAsyncProxyConfiguration(conf, bucket));
 
     MultipartConfiguration multipartConfiguration = MultipartConfiguration.builder()

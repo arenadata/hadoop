@@ -132,7 +132,7 @@ public class STSClientFactory {
         AWSClientConfig.createClientConfigBuilder(conf, AWS_SERVICE_IDENTIFIER_STS);
 
     final ApacheHttpClient.Builder httpClientBuilder =
-        AWSClientConfig.createHttpClientBuilder(conf);
+        AWSClientConfig.createHttpClientBuilder(conf, bucket);
 
     final RetryPolicy.Builder retryPolicyBuilder = AWSClientConfig.createRetryPolicyBuilder(conf);
 

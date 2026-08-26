@@ -355,7 +355,14 @@ form:
 ```
 
 All three trust store options support the usual per-bucket override, for
-example `fs.s3a.bucket.private-store.ssl.truststore`.
+example `fs.s3a.bucket.private-store.ssl.truststore`. This includes the
+password, which may be created under a bucket-scoped alias so that each bucket
+carries its own secret:
+
+```bash
+hadoop credential create fs.s3a.bucket.private-store.ssl.truststore.password \
+  -provider jceks://file/etc/hadoop/conf/s3a.jceks
+```
 
 If no password is declared at all the trust store is still loaded, but for a
 JKS store the JVM then skips the integrity (MAC) check on the file. This is
