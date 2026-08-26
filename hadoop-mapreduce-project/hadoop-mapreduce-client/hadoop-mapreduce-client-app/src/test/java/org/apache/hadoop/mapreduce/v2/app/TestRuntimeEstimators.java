@@ -69,7 +69,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.event.AsyncDispatcher;
+import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -107,7 +107,7 @@ public class TestRuntimeEstimators {
 
   private final AtomicInteger slotsInUse = new AtomicInteger(0);
 
-  AsyncDispatcher dispatcher;
+  DrainDispatcher dispatcher;
 
   DefaultSpeculator speculator;
 
@@ -128,7 +128,7 @@ public class TestRuntimeEstimators {
       (TaskRuntimeEstimator testedEstimator, int expectedSpeculations) {
     estimator = testedEstimator;
 	clock = new ControlledClock();
-	dispatcher = new AsyncDispatcher();
+	dispatcher = new DrainDispatcher();
     Configuration conf = new Configuration();
     dispatcher.init(conf);
 
@@ -146,16 +146,19 @@ public class TestRuntimeEstimators {
 
     estimator.contextualize(conf, myAppContext);
 
-    conf.setLong(MRJobConfig.SPECULATIVE_RETRY_AFTER_NO_SPECULATE, 500L);
-    conf.setLong(MRJobConfig.SPECULATIVE_RETRY_AFTER_SPECULATE, 5000L);
+    // Keep the speculator's background scan thread dormant: speculation scans
+    // are driven synchronously via computeSpeculations() below, so the test
+    // does not depend on wall-clock timing.
+    conf.setLong(MRJobConfig.SPECULATIVE_RETRY_AFTER_NO_SPECULATE, 50000000L);
+    conf.setLong(MRJobConfig.SPECULATIVE_RETRY_AFTER_SPECULATE, 100000000L);
     conf.setDouble(MRJobConfig.SPECULATIVECAP_RUNNING_TASKS, 0.1);
     conf.setDouble(MRJobConfig.SPECULATIVECAP_TOTAL_TASKS, 0.001);
     conf.setInt(MRJobConfig.SPECULATIVE_MINIMUM_ALLOWED_TASKS, 5);
     speculator = new DefaultSpeculator(conf, myAppContext, estimator, clock);
     Assert.assertEquals("wrong SPECULATIVE_RETRY_AFTER_NO_SPECULATE value",
-        500L, speculator.getSoonestRetryAfterNoSpeculate());
+        50000000L, speculator.getSoonestRetryAfterNoSpeculate());
     Assert.assertEquals("wrong SPECULATIVE_RETRY_AFTER_SPECULATE value",
-        5000L, speculator.getSoonestRetryAfterSpeculate());
+        100000000L, speculator.getSoonestRetryAfterSpeculate());
     assertThat(speculator.getProportionRunningTasksSpeculatable())
         .isCloseTo(0.1, offset(0.00001));
     assertThat(speculator.getProportionTotalTasksSpeculatable())
@@ -227,20 +230,15 @@ public class TestRuntimeEstimators {
         }
       }
 
-      long startTime = System.currentTimeMillis();
-
-      // drain the speculator event queue
-      while (!speculator.eventQueueEmpty()) {
-        Thread.yield();
-        if (System.currentTimeMillis() > startTime + 130000) {
-          return;
-        }
-      }
+      // process pending container-need and speculation events before
+      // advancing the clock
+      dispatcher.await();
 
       clock.tickMsec(1000L);
 
       if (clock.getTime() % 10000L == 0L) {
-        speculator.scanForSpeculations();
+        speculator.computeSpeculations();
+        dispatcher.await();
       }
     }
 
