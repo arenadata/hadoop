@@ -420,20 +420,41 @@ public class SaslDataTransferClient {
    * Extracts the block pool ID from a block access token.
    * Returns null if the token cannot be decoded.
    */
-  private static String getBlockPoolIdFromToken(
+  @VisibleForTesting
+  static String getBlockPoolIdFromToken(
+      Token<BlockTokenIdentifier> accessToken) {
+    BlockTokenIdentifier identifier =
+        tryDecodeBlockTokenIdentifier(accessToken);
+    return identifier != null ? identifier.getBlockPoolId() : null;
+  }
+
+  /**
+   * Decodes the block token identifier directly instead of through
+   * Token#decodeIdentifier, which resolves the identifier class with
+   * ServiceLoader over the thread context class loader and returns null
+   * when the HDFS service entries are not visible to it.
+   *
+   * @return the decoded identifier, or null if the token is null, empty or
+   *     cannot be decoded
+   */
+  private static BlockTokenIdentifier tryDecodeBlockTokenIdentifier(
       Token<BlockTokenIdentifier> accessToken) {
     if (accessToken == null) {
       return null;
     }
-    try {
-      BlockTokenIdentifier identifier = accessToken.decodeIdentifier();
-      if (identifier != null) {
-        return identifier.getBlockPoolId();
-      }
-    } catch (IOException e) {
-      LOG.debug("Failed to decode block token identifier for block pool ID", e);
+    byte[] identifier = accessToken.getIdentifier();
+    if (identifier == null || identifier.length == 0) {
+      return null;
     }
-    return null;
+    BlockTokenIdentifier tokenIdentifier = new BlockTokenIdentifier();
+    try (DataInputStream in =
+        new DataInputStream(new ByteArrayInputStream(identifier))) {
+      tokenIdentifier.readFields(in);
+    } catch (IOException e) {
+      LOG.debug("Failed to decode block token identifier", e);
+      return null;
+    }
+    return tokenIdentifier;
   }
 
   @VisibleForTesting
@@ -487,7 +508,11 @@ public class SaslDataTransferClient {
       SecretKey secretKey, Map<String, String> saslProps)
       throws IOException {
     byte[] newSecret = saslProps.get(Sasl.QOP).getBytes(StandardCharsets.UTF_8);
-    BlockTokenIdentifier bkid = accessToken.decodeIdentifier();
+    BlockTokenIdentifier bkid = tryDecodeBlockTokenIdentifier(accessToken);
+    if (bkid == null) {
+      throw new IOException(
+          "Failed to decode block token identifier to overwrite QOP");
+    }
     bkid.setHandshakeMsg(newSecret);
     byte[] bkidBytes = bkid.getBytes();
     accessToken.setPassword(
@@ -554,20 +579,16 @@ public class SaslDataTransferClient {
       // a new version but the cluster does not have this feature.
       // In which case there will be no encrypted secret sent from NN.
       BlockTokenIdentifier blockTokenIdentifier =
-          accessToken.decodeIdentifier();
+          tryDecodeBlockTokenIdentifier(accessToken);
       if (blockTokenIdentifier != null) {
-        byte[] handshakeSecret =
-            accessToken.decodeIdentifier().getHandshakeMsg();
+        byte[] handshakeSecret = blockTokenIdentifier.getHandshakeMsg();
         if (handshakeSecret == null || handshakeSecret.length == 0) {
           LOG.debug("Handshake secret is null, "
               + "sending without handshake secret.");
           sendSaslMessage(out, new byte[0]);
         } else {
           LOG.debug("Sending handshake secret.");
-          BlockTokenIdentifier identifier = new BlockTokenIdentifier();
-          identifier.readFields(new DataInputStream(
-              new ByteArrayInputStream(accessToken.getIdentifier())));
-          String bpid = identifier.getBlockPoolId();
+          String bpid = blockTokenIdentifier.getBlockPoolId();
           sendSaslMessageHandshakeSecret(out, new byte[0],
               handshakeSecret, bpid);
         }
