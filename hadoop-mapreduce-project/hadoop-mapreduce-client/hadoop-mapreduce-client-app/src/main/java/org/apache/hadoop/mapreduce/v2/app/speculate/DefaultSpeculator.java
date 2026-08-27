@@ -552,7 +552,8 @@ public class DefaultSpeculator extends AbstractService implements
     return successes;
   }
 
-  private int computeSpeculations() {
+  @VisibleForTesting
+  public int computeSpeculations() {
     // We'll try to issue one map and one reduce speculation per job per run
     return maybeScheduleAMapSpeculation() + maybeScheduleAReduceSpeculation();
   }
