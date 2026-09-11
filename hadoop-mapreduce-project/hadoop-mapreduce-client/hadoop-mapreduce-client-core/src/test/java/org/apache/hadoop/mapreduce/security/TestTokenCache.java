@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.mapreduce.security;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.*;
 import static org.mockito.ArgumentMatchers.eq;
@@ -35,6 +36,8 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.Master;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.alias.TokenIssuingCredentialProvider;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -207,5 +210,37 @@ public class TestTokenCache {
     String fs_addr = fs1.getCanonicalServiceName();
     Token<?> nnt = TokenCache.getDelegationToken(creds, fs_addr);
     assertNotNull("Token for nn is null", nnt);
+  }
+
+  @Test
+  public void testObtainTokensForCredentialProviders() throws Exception {
+    TokenIssuingCredentialProvider.ISSUED.set(0);
+    Configuration jobConf = new Configuration(conf);
+    jobConf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "user:///,dtissuer://vault-a/,dtissuer://broken/");
+    Credentials creds = new Credentials();
+
+    TokenCache.obtainTokensForCredentialProvidersInternal(creds, jobConf);
+
+    Token<?> token = creds.getToken(new Text("dtissuer://vault-a/"));
+    assertNotNull("Token from the issuing provider", token);
+    assertEquals(renewer, new String(token.getIdentifier(), UTF_8));
+    assertEquals(1, creds.numberOfTokens());
+
+    TokenCache.obtainTokensForCredentialProvidersInternal(creds, jobConf);
+    assertEquals("Existing token must not be reissued", 1,
+        TokenIssuingCredentialProvider.ISSUED.get());
+    assertEquals(1, creds.numberOfTokens());
+  }
+
+  @Test
+  public void testObtainTokensForCredentialProvidersWithoutProviders()
+      throws Exception {
+    Credentials creds = new Credentials();
+
+    TokenCache.obtainTokensForCredentialProvidersInternal(creds,
+        new Configuration());
+
+    assertEquals(0, creds.numberOfTokens());
   }
 }
