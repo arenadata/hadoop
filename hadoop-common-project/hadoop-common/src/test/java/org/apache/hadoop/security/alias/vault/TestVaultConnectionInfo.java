@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.URI;
 
 import org.junit.Test;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
@@ -213,5 +214,37 @@ public class TestVaultConnectionInfo {
         new URI("vault://https@vault.example.com:8200//secret/hadoop//"));
     assertEquals("secret", info.getMount());
     assertEquals("hadoop", info.getBasePath());
+  }
+
+  @Test
+  public void testTokenService() throws Exception {
+    VaultConnectionInfo info = new VaultConnectionInfo(
+        new URI("vault://https@vault.example.com:8210/secret/hadoop"));
+    assertEquals("vault://https@vault.example.com:8210",
+        info.getServerService());
+    String service = info.getTokenService("auth/kerberos");
+    assertEquals("vault://https@vault.example.com:8210/auth/kerberos",
+        service);
+    assertEquals("auth/kerberos", VaultDelegationTokens.authMountPath(service));
+
+    VaultConnectionInfo fromService =
+        VaultConnectionInfo.fromTokenService(service);
+    assertEquals("vault.example.com", fromService.getHost());
+    assertEquals("https://vault.example.com:8210/v1/auth/kerberos/login",
+        fromService.getApiUrl("auth/kerberos/login"));
+  }
+
+  @Test
+  public void testFromTokenServiceRejectsOtherServices() throws Exception {
+    intercept(IOException.class, "Invalid Vault token service",
+        () -> VaultConnectionInfo.fromTokenService("vault.example.com:8210"));
+    intercept(IOException.class, "Invalid Vault token service",
+        () -> VaultConnectionInfo.fromTokenService(
+            "https://vault.example.com:8210/auth/kerberos"));
+    intercept(IOException.class, "Invalid Vault token service",
+        () -> VaultConnectionInfo.fromTokenService(null));
+    intercept(IOException.class, "has no auth mount path",
+        () -> VaultDelegationTokens.authMountPath(
+            "vault://https@vault.example.com:8210/"));
   }
 }

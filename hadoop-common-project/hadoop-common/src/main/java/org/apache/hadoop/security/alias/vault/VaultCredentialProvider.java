@@ -26,8 +26,11 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.token.DelegationTokenIssuer;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
 import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
 import org.slf4j.Logger;
@@ -57,7 +60,8 @@ import org.slf4j.LoggerFactory;
  * immediately.
  */
 @InterfaceAudience.Private
-public class VaultCredentialProvider extends CredentialProvider {
+public class VaultCredentialProvider extends CredentialProvider
+    implements DelegationTokenIssuer {
 
   public static final String SCHEME_NAME = "vault";
 
@@ -74,6 +78,7 @@ public class VaultCredentialProvider extends CredentialProvider {
   private final VaultConnectionInfo connInfo;
   private final VaultHttpClient httpClient;
   private final boolean cacheEnabled;
+  private final Configuration conf;
 
   /**
    * Create a Vault credential provider.
@@ -85,6 +90,7 @@ public class VaultCredentialProvider extends CredentialProvider {
   public VaultCredentialProvider(URI uri, Configuration conf)
       throws IOException {
     this.uri = uri;
+    this.conf = conf;
     this.connInfo = new VaultConnectionInfo(uri);
     this.cacheEnabled = conf.getBoolean(
         VaultCredentialProviderConfig.CACHE_ENABLED_KEY,
@@ -97,18 +103,9 @@ public class VaultCredentialProvider extends CredentialProvider {
 
     String baseUrl = connInfo.getBaseUrl();
     try {
-      this.httpClient = clientCache.get(baseUrl, () -> {
-        String authMethodName = conf.get(
-            VaultCredentialProviderConfig.AUTH_METHOD_KEY,
-            VaultCredentialProviderConfig.AUTH_METHOD_DEFAULT);
-        VaultAuthMethod authMethod;
-        if ("kerberos".equalsIgnoreCase(authMethodName)) {
-          authMethod = new KerberosVaultAuth(conf, connInfo);
-        } else {
-          authMethod = new TokenVaultAuth(conf);
-        }
-        return new VaultHttpClient(conf, connInfo, authMethod);
-      });
+      this.httpClient = clientCache.get(baseUrl, () ->
+          new VaultHttpClient(conf, connInfo,
+              createAuthMethod(conf, connInfo)));
     } catch (ExecutionException e) {
       throw new IOException("Failed to create VaultHttpClient for " + baseUrl,
           e.getCause());
@@ -123,6 +120,7 @@ public class VaultCredentialProvider extends CredentialProvider {
   VaultCredentialProvider(URI uri, VaultConnectionInfo connInfo,
       VaultHttpClient httpClient) {
     this.uri = uri;
+    this.conf = new Configuration(false);
     this.connInfo = connInfo;
     this.httpClient = httpClient;
     this.cacheEnabled = false;
@@ -134,6 +132,7 @@ public class VaultCredentialProvider extends CredentialProvider {
   VaultCredentialProvider(URI uri, VaultConnectionInfo connInfo,
       VaultHttpClient httpClient, boolean cacheEnabled, long cacheTtlMs) {
     this.uri = uri;
+    this.conf = new Configuration(false);
     this.connInfo = connInfo;
     this.httpClient = httpClient;
     this.cacheEnabled = cacheEnabled;
@@ -142,6 +141,111 @@ public class VaultCredentialProvider extends CredentialProvider {
           .expireAfterWrite(cacheTtlMs, TimeUnit.MILLISECONDS)
           .build();
     }
+  }
+
+  private static String authMethodName(Configuration conf) {
+    String name = conf.getTrimmed(
+        VaultCredentialProviderConfig.AUTH_METHOD_KEY,
+        VaultCredentialProviderConfig.AUTH_METHOD_DEFAULT);
+    return name.isEmpty()
+        ? VaultCredentialProviderConfig.AUTH_METHOD_DEFAULT : name;
+  }
+
+  /**
+   * Pick the auth method for {@code hadoop.security.credential.vault.auth.method}.
+   * With {@code kerberos}, a process without Kerberos credentials that holds
+   * a Vault delegation token for this server (a YARN container) logs in
+   * with the token instead of SPNEGO. Credentials are those of the current
+   * user, or of the real user behind a proxy user.
+   */
+  static VaultAuthMethod createAuthMethod(Configuration conf,
+      VaultConnectionInfo connInfo) throws IOException {
+    String name = authMethodName(conf);
+    if (VaultCredentialProviderConfig.AUTH_METHOD_TOKEN
+        .equalsIgnoreCase(name)) {
+      return new TokenVaultAuth(conf);
+    }
+    boolean delegation = VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION
+        .equalsIgnoreCase(name);
+    if (!delegation && !VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS
+        .equalsIgnoreCase(name)) {
+      throw new IOException("Unsupported Vault auth method '" + name
+          + "'; expected " + VaultCredentialProviderConfig.AUTH_METHOD_TOKEN
+          + ", " + VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS + " or "
+          + VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION);
+    }
+    String mountPath = VaultAuthRequests.mountPath(conf);
+    UserGroupInformation ugi = VaultDelegationTokens.actualUser();
+    Token<?> token = VaultDelegationTokens.selectToken(
+        ugi.getCredentials(), connInfo, mountPath);
+    if (delegation) {
+      if (token == null) {
+        throw new IOException("User " + ugi.getUserName()
+            + " has no Vault delegation token for "
+            + connInfo.getServerService());
+      }
+      return new VaultDelegationTokenAuth(connInfo, mountPath);
+    }
+    if (!ugi.hasKerberosCredentials()) {
+      if (token != null) {
+        LOG.debug("User {} has no Kerberos credentials, using the Vault "
+            + "delegation token for {}", ugi.getUserName(),
+            connInfo.getServerService());
+        return new VaultDelegationTokenAuth(connInfo, mountPath);
+      }
+      if (VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT
+          .equalsIgnoreCase(conf.get(
+              VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
+              VaultCredentialProviderConfig.KERBEROS_UGI_MODE_DEFAULT))) {
+        throw new IOException("User " + ugi.getUserName()
+            + " has neither Kerberos credentials nor a Vault delegation "
+            + "token for " + connInfo.getServerService());
+      }
+    }
+    return new KerberosVaultAuth(conf, connInfo);
+  }
+
+  /**
+   * The token service of this provider, or null when the configured auth
+   * mount path is invalid.
+   */
+  @Override
+  public String getCanonicalServiceName() {
+    try {
+      return connInfo.getTokenService(VaultAuthRequests.mountPath(conf));
+    } catch (IOException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Obtain a delegation token owned by the current user, who must hold
+   * Kerberos credentials of their own. Returns null when this provider
+   * does not use Kerberos auth, when the current user is a proxy user or
+   * when they have no Kerberos credentials: tokens are never issued in the
+   * name of the dedicated keytab principal.
+   */
+  @Override
+  public Token<?> getDelegationToken(String renewer) throws IOException {
+    if (!VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS
+        .equalsIgnoreCase(authMethodName(conf))) {
+      LOG.debug("Not issuing a Vault delegation token for {}: auth method is "
+          + "not kerberos", connInfo.getServerService());
+      return null;
+    }
+    UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+    if (ugi.getRealUser() != null || !ugi.hasKerberosCredentials()) {
+      LOG.debug("Not issuing a Vault delegation token for {}: user {} is a "
+          + "proxy user or has no Kerberos credentials",
+          connInfo.getServerService(), ugi.getUserName());
+      return null;
+    }
+    Token<?> token = new KerberosVaultAuth(conf, connInfo,
+        VaultAuthRequests.mountPath(conf), ugi)
+        .getDelegationToken(httpClient, renewer);
+    LOG.info("Obtained Vault delegation token {} with renewer {}", token,
+        renewer);
+    return token;
   }
 
   private static void initClientCache(Configuration conf) {

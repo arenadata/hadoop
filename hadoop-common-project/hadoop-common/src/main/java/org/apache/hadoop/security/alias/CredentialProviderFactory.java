@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.ServiceLoader;
@@ -32,6 +33,11 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.PathIOException;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.token.DelegationTokenIssuer;
+import org.apache.hadoop.security.token.Token;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A factory to create a list of CredentialProvider based on the path given in a
@@ -69,6 +75,41 @@ public abstract class CredentialProviderFactory {
    * for rigorousness.
    */
   private static final AtomicBoolean SERVICE_LOADER_LOCKED = new AtomicBoolean(false);
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(CredentialProviderFactory.class);
+
+  /**
+   * Obtain delegation tokens from the configured credential providers that
+   * issue them, so tasks without Kerberos credentials of their own can read
+   * credentials. Each provider path is handled on its own: one that cannot
+   * be created or refuses a token is logged and skipped.
+   *
+   * @param conf the configuration naming the providers
+   * @param renewer the principal allowed to renew the tokens
+   * @param credentials the credentials to add the tokens to
+   * @return the tokens added
+   */
+  public static List<Token<?>> addDelegationTokens(Configuration conf,
+      String renewer, Credentials credentials) {
+    List<Token<?>> tokens = new ArrayList<>();
+    for (String path : conf.getStringCollection(CREDENTIAL_PROVIDER_PATH)) {
+      try {
+        Configuration single = new Configuration(conf);
+        single.set(CREDENTIAL_PROVIDER_PATH, path);
+        for (CredentialProvider provider : getProviders(single)) {
+          if (provider instanceof DelegationTokenIssuer) {
+            Collections.addAll(tokens, ((DelegationTokenIssuer) provider)
+                .addDelegationTokens(renewer, credentials));
+          }
+        }
+      } catch (Exception e) {
+        LOG.warn("Cannot obtain delegation tokens from credential provider "
+            + path, e);
+      }
+    }
+    return tokens;
+  }
 
   public static List<CredentialProvider> getProviders(Configuration conf
                                                ) throws IOException {

@@ -35,6 +35,7 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.slf4j.Logger;
@@ -89,6 +90,42 @@ public class TokenCache {
    */
   public static void cleanUpTokenReferral(Configuration conf) {
     conf.unset(MRJobConfig.MAPREDUCE_JOB_CREDENTIALS_BINARY);
+  }
+
+  /**
+   * Obtain delegation tokens from the credential providers of
+   * {@code hadoop.security.credential.provider.path} that issue them, so
+   * tasks can read credentials without Kerberos credentials of their own.
+   * Providers that cannot be created or refuse a token are logged and
+   * skipped: the job may not need them.
+   *
+   * @param credentials the credentials to add the tokens to
+   * @param conf the job configuration
+   * @throws IOException if the renewer principal cannot be determined
+   */
+  public static void obtainTokensForCredentialProviders(
+      Credentials credentials, Configuration conf) throws IOException {
+    if (!UserGroupInformation.isSecurityEnabled()) {
+      return;
+    }
+    obtainTokensForCredentialProvidersInternal(credentials, conf);
+  }
+
+  static void obtainTokensForCredentialProvidersInternal(
+      Credentials credentials, Configuration conf) throws IOException {
+    if (conf.getStringCollection(
+        CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH).isEmpty()) {
+      return;
+    }
+    String renewer = Master.getMasterPrincipal(conf);
+    if (StringUtils.isEmpty(renewer)) {
+      throw new IOException(
+          "Can't get Master Kerberos principal for use as renewer");
+    }
+    for (Token<?> token : CredentialProviderFactory.addDelegationTokens(
+        conf, renewer, credentials)) {
+      LOG.info("Got dt for " + token.getService() + "; " + token);
+    }
   }
 
   static void obtainTokensForNamenodesInternal(Credentials credentials,
