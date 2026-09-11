@@ -72,8 +72,7 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   }
 
   private final UserGroupInformation vaultUgi;
-  private final VaultConnectionInfo connInfo;
-  private final String loginPath;
+  private final String loginUrl;
   private final String servicePrincipal;
 
   /**
@@ -81,12 +80,15 @@ public class KerberosVaultAuth implements VaultAuthMethod {
    *
    * @param conf the Hadoop configuration
    * @param connInfo the Vault connection info
-   * @throws IOException if the keytab login fails
+   * @throws IOException if the keytab login fails or the auth mount path
+   *     is empty
    */
   public KerberosVaultAuth(Configuration conf,
       VaultConnectionInfo connInfo) throws IOException {
-    this.connInfo = connInfo;
     String vaultHost = connInfo.getHost();
+    this.loginUrl = connInfo.getApiUrl(buildLoginPath(conf.get(
+        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_KEY,
+        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT)));
 
     String ugiMode = conf.get(
         VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
@@ -121,10 +123,6 @@ public class KerberosVaultAuth implements VaultAuthMethod {
           .loginUserFromKeytabAndReturnUGI(resolvedPrincipal, keytab);
     }
 
-    this.loginPath = conf.get(
-        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_KEY,
-        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT);
-
     // Resolve _HOST in service principal to Vault server hostname
     String configuredSpn = conf.get(
         VaultCredentialProviderConfig.KERBEROS_SERVICE_PRINCIPAL_KEY);
@@ -141,6 +139,7 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   @Override
   @SuppressWarnings("unchecked")
   public String authenticate(VaultHttpClient client) throws IOException {
+    vaultUgi.checkTGTAndReloginFromKeytab();
     try {
       return vaultUgi.doAs(
           (PrivilegedExceptionAction<String>) () -> {
@@ -176,18 +175,32 @@ public class KerberosVaultAuth implements VaultAuthMethod {
     }
   }
 
+  /**
+   * Build the Kerberos login path from the auth backend mount path.
+   * The login endpoint of the Vault Kerberos auth method is
+   * {@code /v1/<mount>/login}.
+   *
+   * @param mountPath the auth backend mount path, e.g. {@code auth/kerberos}
+   * @return the login path relative to {@code /v1/}
+   * @throws IOException if the mount path is empty
+   */
+  static String buildLoginPath(String mountPath) throws IOException {
+    String mount = VaultConnectionInfo.stripSlashes(mountPath);
+    if (mount.isEmpty()) {
+      throw new IOException("Vault Kerberos auth mount path is empty. Set '"
+          + VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_KEY + "'.");
+    }
+    return mount + "/login";
+  }
+
   private String loginToVault(VaultHttpClient client,
       String spnegoToken) throws IOException {
-    String url = connInfo.getBaseUrl() + "/v1/" + loginPath;
-
-    HttpURLConnection conn = client.createConnection(url, "POST");
+    HttpURLConnection conn = client.createConnection(loginUrl, "POST");
     conn.setRequestProperty("Authorization", "Negotiate " + spnegoToken);
     conn.setDoOutput(true);
     conn.setRequestProperty("Content-Type", "application/json");
     // Empty body for kerberos login
-    try (java.io.OutputStream os = conn.getOutputStream()) {
-      // no content
-    }
+    conn.getOutputStream().close();
 
     int statusCode = conn.getResponseCode();
 
@@ -203,8 +216,8 @@ public class KerberosVaultAuth implements VaultAuthMethod {
       }
       conn.disconnect();
       throw new IOException(
-          "Vault Kerberos login failed with status " + statusCode
-              + ": " + errorBody);
+          "Vault Kerberos login to " + loginUrl + " failed with status "
+              + statusCode + ": " + errorBody);
     }
 
     String responseBody;
@@ -212,8 +225,13 @@ public class KerberosVaultAuth implements VaultAuthMethod {
       responseBody = IOUtils.toString(is, StandardCharsets.UTF_8);
     }
 
-    VaultResponse.AuthLogin response = MAPPER.readValue(
-        responseBody, VaultResponse.AuthLogin.class);
+    VaultResponse.AuthLogin response;
+    try {
+      response = MAPPER.readValue(responseBody, VaultResponse.AuthLogin.class);
+    } catch (IOException e) {
+      throw new IOException("Vault Kerberos login to " + loginUrl
+          + " returned an unparseable response", e);
+    }
     if (response.auth == null) {
       throw new IOException(
           "Vault Kerberos login response missing 'auth' field");

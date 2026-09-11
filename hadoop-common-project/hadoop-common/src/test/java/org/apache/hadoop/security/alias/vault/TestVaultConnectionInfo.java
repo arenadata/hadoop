@@ -24,7 +24,6 @@ import java.net.URI;
 import org.junit.Test;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.fail;
 
 /**
  * Tests for {@link VaultConnectionInfo}.
@@ -198,5 +197,21 @@ public class TestVaultConnectionInfo {
     VaultConnectionInfo info = new VaultConnectionInfo(uri);
 
     assertEquals("secret", info.getSecretKey());
+  }
+
+  @Test
+  public void testGetApiUrl() throws Exception {
+    VaultConnectionInfo info = new VaultConnectionInfo(
+        new URI("vault://https@vault.example.com:8200/secret/hadoop"));
+    assertEquals("https://vault.example.com:8200/v1/secret/data/hadoop/x",
+        info.getApiUrl(info.buildDataPath("x")));
+  }
+
+  @Test
+  public void testSurroundingSlashesInPath() throws Exception {
+    VaultConnectionInfo info = new VaultConnectionInfo(
+        new URI("vault://https@vault.example.com:8200//secret/hadoop//"));
+    assertEquals("secret", info.getMount());
+    assertEquals("hadoop", info.getBasePath());
   }
 }
