@@ -110,7 +110,8 @@ public class VaultCredentialProvider extends CredentialProvider {
         return new VaultHttpClient(conf, connInfo, authMethod);
       });
     } catch (ExecutionException e) {
-      throw new IOException("Failed to create VaultHttpClient", e.getCause());
+      throw new IOException("Failed to create VaultHttpClient for " + baseUrl,
+          e.getCause());
     }
 
     LOG.debug("Created VaultCredentialProvider for {}", uri);
