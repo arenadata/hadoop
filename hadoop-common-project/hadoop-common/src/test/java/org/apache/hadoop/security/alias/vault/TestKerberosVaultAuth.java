@@ -60,6 +60,8 @@ import static org.junit.Assert.assertEquals;
  * SPNEGO login round trip against a mock Vault server backed by MiniKdc.
  * The mock accepts the SPNEGO token with the {@code HTTP/localhost} key
  * from the same keytab, so a token a real acceptor would reject fails here.
+ * UGI relogin is forced on every authentication so the keytab relogin path
+ * runs on each login.
  */
 public class TestKerberosVaultAuth {
 
@@ -104,6 +106,7 @@ public class TestKerberosVaultAuth {
     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION,
         "kerberos");
     UserGroupInformation.setConfiguration(conf);
+    UserGroupInformation.setShouldRenewImmediatelyForTests(true);
     serverUgi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(
         SERVER_PRINCIPAL + "@" + kdc.getRealm(), keytab.getAbsolutePath());
   }
@@ -113,6 +116,7 @@ public class TestKerberosVaultAuth {
     if (kdc != null) {
       kdc.stop();
     }
+    UserGroupInformation.setShouldRenewImmediatelyForTests(false);
     UserGroupInformation.reset();
   }
 

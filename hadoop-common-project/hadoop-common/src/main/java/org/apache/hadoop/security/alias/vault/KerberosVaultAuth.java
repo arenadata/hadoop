@@ -140,6 +140,7 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   @Override
   @SuppressWarnings("unchecked")
   public String authenticate(VaultHttpClient client) throws IOException {
+    vaultUgi.checkTGTAndReloginFromKeytab();
     try {
       return vaultUgi.doAs(
           (PrivilegedExceptionAction<String>) () -> {
