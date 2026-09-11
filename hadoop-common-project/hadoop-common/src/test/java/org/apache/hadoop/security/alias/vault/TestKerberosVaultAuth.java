@@ -65,7 +65,6 @@ import static org.junit.Assert.assertEquals;
  */
 public class TestKerberosVaultAuth {
 
-  private static final String BASE_URL = "http://localhost:8200";
   private static final String CLIENT_PRINCIPAL = "vault-client";
   private static final String SERVER_PRINCIPAL = "HTTP/localhost";
   private static final String DEFAULT_LOGIN_PATH = "/v1/auth/kerberos/login";
@@ -150,22 +149,21 @@ public class TestKerberosVaultAuth {
   }
 
   @Test
-  public void testBuildLoginUrl() throws Exception {
-    assertEquals(BASE_URL + DEFAULT_LOGIN_PATH,
-        KerberosVaultAuth.buildLoginUrl(BASE_URL,
-            VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT));
-    assertEquals(BASE_URL + "/v1/auth/krb-prod/login",
-        KerberosVaultAuth.buildLoginUrl(BASE_URL, "auth/krb-prod"));
-    assertEquals(BASE_URL + "/v1/auth/krb-prod/login",
-        KerberosVaultAuth.buildLoginUrl(BASE_URL, " /auth/krb-prod// "));
+  public void testBuildLoginPath() throws Exception {
+    assertEquals("auth/kerberos/login", KerberosVaultAuth.buildLoginPath(
+        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT));
+    assertEquals("auth/krb-prod/login",
+        KerberosVaultAuth.buildLoginPath("auth/krb-prod"));
+    assertEquals("auth/krb-prod/login",
+        KerberosVaultAuth.buildLoginPath(" /auth/krb-prod// "));
   }
 
   @Test
-  public void testBuildLoginUrlRejectsEmptyMount() throws Exception {
+  public void testBuildLoginPathRejectsEmptyMount() throws Exception {
     intercept(IOException.class, "mount path is empty",
-        () -> KerberosVaultAuth.buildLoginUrl(BASE_URL, ""));
+        () -> KerberosVaultAuth.buildLoginPath(""));
     intercept(IOException.class, "mount path is empty",
-        () -> KerberosVaultAuth.buildLoginUrl(BASE_URL, "/"));
+        () -> KerberosVaultAuth.buildLoginPath("/"));
   }
 
   @Test

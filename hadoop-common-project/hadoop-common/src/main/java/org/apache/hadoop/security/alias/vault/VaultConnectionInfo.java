@@ -21,6 +21,7 @@ package org.apache.hadoop.security.alias.vault;
 import java.io.IOException;
 import java.net.URI;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.security.ProviderUtils;
@@ -101,14 +102,7 @@ public class VaultConnectionInfo {
       throw new IOException("Invalid Vault URI: missing path in " + uri);
     }
 
-    // Remove leading slash
-    if (path.startsWith("/")) {
-      path = path.substring(1);
-    }
-    // Remove trailing slash
-    if (path.endsWith("/")) {
-      path = path.substring(0, path.length() - 1);
-    }
+    path = stripSlashes(path);
 
     if (path.isEmpty()) {
       throw new IOException(
@@ -219,6 +213,24 @@ public class VaultConnectionInfo {
    */
   public String getBaseUrl() {
     return protocol + "://" + host + ":" + port;
+  }
+
+  /**
+   * Build the URL of a Vault API path.
+   * Format: {protocol}://{host}:{port}/v1/{path}
+   *
+   * @param path the API path relative to {@code /v1/}
+   * @return the full URL
+   */
+  public String getApiUrl(String path) {
+    return getBaseUrl() + "/v1/" + path;
+  }
+
+  /**
+   * Strip surrounding whitespace and slashes from a path.
+   */
+  static String stripSlashes(String path) {
+    return StringUtils.strip(StringUtils.trimToEmpty(path), "/");
   }
 
   public String getProtocol() {

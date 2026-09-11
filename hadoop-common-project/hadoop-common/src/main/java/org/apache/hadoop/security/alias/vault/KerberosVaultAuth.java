@@ -26,7 +26,6 @@ import java.security.PrivilegedExceptionAction;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.SecurityUtil;
@@ -87,9 +86,9 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   public KerberosVaultAuth(Configuration conf,
       VaultConnectionInfo connInfo) throws IOException {
     String vaultHost = connInfo.getHost();
-    this.loginUrl = buildLoginUrl(connInfo.getBaseUrl(), conf.get(
+    this.loginUrl = connInfo.getApiUrl(buildLoginPath(conf.get(
         VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_KEY,
-        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT));
+        VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT)));
 
     String ugiMode = conf.get(
         VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
@@ -177,23 +176,21 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   }
 
   /**
-   * Build the Kerberos login URL from the auth backend mount path.
+   * Build the Kerberos login path from the auth backend mount path.
    * The login endpoint of the Vault Kerberos auth method is
    * {@code /v1/<mount>/login}.
    *
-   * @param baseUrl the Vault base URL
    * @param mountPath the auth backend mount path, e.g. {@code auth/kerberos}
-   * @return the login URL
+   * @return the login path relative to {@code /v1/}
    * @throws IOException if the mount path is empty
    */
-  static String buildLoginUrl(String baseUrl, String mountPath)
-      throws IOException {
-    String mount = StringUtils.strip(StringUtils.trimToEmpty(mountPath), "/");
+  static String buildLoginPath(String mountPath) throws IOException {
+    String mount = VaultConnectionInfo.stripSlashes(mountPath);
     if (mount.isEmpty()) {
       throw new IOException("Vault Kerberos auth mount path is empty. Set '"
           + VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_KEY + "'.");
     }
-    return baseUrl + "/v1/" + mount + "/login";
+    return mount + "/login";
   }
 
   private String loginToVault(VaultHttpClient client,

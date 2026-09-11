@@ -202,7 +202,7 @@ public class VaultHttpClient implements Closeable {
    */
   public String readSecret(String dataPath, String secretKey)
       throws IOException {
-    String url = connInfo.getBaseUrl() + "/v1/" + dataPath;
+    String url = connInfo.getApiUrl(dataPath);
 
     String responseBody = executeWithRetry("GET", url, null, false);
     if (responseBody == null) {
@@ -225,8 +225,7 @@ public class VaultHttpClient implements Closeable {
    * @throws IOException if the request fails
    */
   public List<String> listSecrets(String metadataPath) throws IOException {
-    String url = connInfo.getBaseUrl() + "/v1/" + metadataPath
-        + "?list=true";
+    String url = connInfo.getApiUrl(metadataPath) + "?list=true";
 
     String responseBody = executeWithRetry("GET", url, null, false);
     if (responseBody == null) {
@@ -266,7 +265,7 @@ public class VaultHttpClient implements Closeable {
    */
   public void writeSecret(String dataPath, String secretKey, String value)
       throws IOException {
-    String url = connInfo.getBaseUrl() + "/v1/" + dataPath;
+    String url = connInfo.getApiUrl(dataPath);
 
     Map<String, Object> data = new HashMap<>();
     Map<String, String> innerData = new HashMap<>();
@@ -284,7 +283,7 @@ public class VaultHttpClient implements Closeable {
    * @throws IOException if the request fails
    */
   public void deleteSecret(String metadataPath) throws IOException {
-    String url = connInfo.getBaseUrl() + "/v1/" + metadataPath;
+    String url = connInfo.getApiUrl(metadataPath);
     executeWithRetry("DELETE", url, null, true);
   }
 
