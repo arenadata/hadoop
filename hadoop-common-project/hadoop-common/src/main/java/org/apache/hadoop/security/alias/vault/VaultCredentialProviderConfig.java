@@ -43,7 +43,10 @@ public final class VaultCredentialProviderConfig {
 
   public static final String AUTH_METHOD_KEY =
       CONFIG_PREFIX + "auth.method";
-  public static final String AUTH_METHOD_DEFAULT = "token";
+  public static final String AUTH_METHOD_TOKEN = "token";
+  public static final String AUTH_METHOD_KERBEROS = "kerberos";
+  public static final String AUTH_METHOD_DELEGATION = "delegation";
+  public static final String AUTH_METHOD_DEFAULT = AUTH_METHOD_TOKEN;
 
   public static final String TOKEN_KEY =
       CONFIG_PREFIX + "token";

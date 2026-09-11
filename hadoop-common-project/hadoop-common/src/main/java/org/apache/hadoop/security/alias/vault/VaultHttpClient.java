@@ -85,6 +85,20 @@ public class VaultHttpClient implements Closeable {
    */
   public VaultHttpClient(Configuration conf, VaultConnectionInfo connInfo,
       VaultAuthMethod authMethod) throws IOException {
+    this(conf, connInfo, authMethod, true);
+  }
+
+  /**
+   * Client for requests that carry their own credentials, such as the
+   * SPNEGO delegation token calls. It cannot read or write secrets.
+   */
+  static VaultHttpClient unauthenticated(Configuration conf,
+      VaultConnectionInfo connInfo) throws IOException {
+    return new VaultHttpClient(conf, connInfo, null, false);
+  }
+
+  private VaultHttpClient(Configuration conf, VaultConnectionInfo connInfo,
+      VaultAuthMethod authMethod, boolean authenticate) throws IOException {
     this.connInfo = connInfo;
     this.authMethod = authMethod;
     this.connectTimeoutMs = conf.getInt(
@@ -108,7 +122,7 @@ public class VaultHttpClient implements Closeable {
       this.sslSocketFactory = null;
     }
 
-    this.clientToken = authMethod.authenticate(this);
+    this.clientToken = authenticate ? authMethod.authenticate(this) : null;
   }
 
   VaultHttpClient(VaultConnectionInfo connInfo, VaultAuthMethod authMethod,
@@ -292,6 +306,10 @@ public class VaultHttpClient implements Closeable {
    */
   private String executeWithRetry(String method, String url,
       String jsonBody, boolean failOnNotFound) throws IOException {
+    if (authMethod == null) {
+      throw new IOException("Vault client for " + connInfo.getBaseUrl()
+          + " has no auth method");
+    }
     IOException lastException = null;
 
     for (int attempt = 0; attempt <= retryCount; attempt++) {
@@ -393,7 +411,7 @@ public class VaultHttpClient implements Closeable {
     }
   }
 
-  private static String readErrorBody(HttpURLConnection conn) {
+  static String readErrorBody(HttpURLConnection conn) {
     try {
       InputStream es = conn.getErrorStream();
       if (es == null) {
@@ -418,5 +436,9 @@ public class VaultHttpClient implements Closeable {
 
   VaultConnectionInfo getConnInfo() {
     return connInfo;
+  }
+
+  VaultAuthMethod getAuthMethod() {
+    return authMethod;
   }
 }

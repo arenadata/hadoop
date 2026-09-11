@@ -415,7 +415,10 @@
   <value>token</value>
   <description>
     Authentication method for Vault credential provider.
-    Supported values: token, kerberos.
+    Supported values: token, kerberos, delegation. With kerberos, a process
+    without Kerberos credentials that holds a Vault delegation token for the
+    server (for example a YARN container) logs in with that token; delegation
+    requires the token.
   </description>
 </property>
 
@@ -509,7 +512,9 @@
   <name>hadoop.security.credential.vault.kerberos.login.path</name>
   <value>auth/kerberos</value>
   <description>
-    Vault auth mount path for Kerberos authentication.
+    Vault auth mount path for Kerberos authentication. Delegation tokens
+    record it in their service and are renewed by the ResourceManager as its
+    own login user.
   </description>
 </property>
 

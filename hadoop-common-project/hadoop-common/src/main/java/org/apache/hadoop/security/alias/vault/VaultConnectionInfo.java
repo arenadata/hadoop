@@ -136,6 +136,41 @@ public class VaultConnectionInfo {
     }
   }
 
+  private VaultConnectionInfo(String protocol, String host, int port) {
+    this.protocol = protocol;
+    this.host = host;
+    this.port = port;
+    this.mount = null;
+    this.basePath = null;
+    this.secretKey = DEFAULT_SECRET_KEY;
+  }
+
+  /**
+   * Connection info for the server named by a delegation token service,
+   * see {@link #getTokenService(String)}. It carries no secret path.
+   *
+   * @param service the token service
+   * @return the connection info
+   * @throws IOException if the service is not a Vault token service
+   */
+  public static VaultConnectionInfo fromTokenService(String service)
+      throws IOException {
+    String prefix = VaultCredentialProvider.SCHEME_NAME + "://";
+    int at = service == null ? -1 : service.indexOf('@');
+    if (at < 0 || !service.startsWith(prefix)) {
+      throw new IOException("Invalid Vault token service: " + service);
+    }
+    String protocol = service.substring(prefix.length(), at);
+    int slash = service.indexOf('/', at);
+    String hostPort = slash < 0 ? service.substring(at + 1)
+        : service.substring(at + 1, slash);
+    String host = parseHost(hostPort);
+    if (protocol.isEmpty() || host.isEmpty()) {
+      throw new IOException("Invalid Vault token service: " + service);
+    }
+    return new VaultConnectionInfo(protocol, host, parsePort(hostPort));
+  }
+
   private static String parseHost(String hostPort) {
     int colonIdx = hostPort.indexOf(':');
     if (colonIdx >= 0) {
@@ -224,6 +259,28 @@ public class VaultConnectionInfo {
    */
   public String getApiUrl(String path) {
     return getBaseUrl() + "/v1/" + path;
+  }
+
+  /**
+   * Server part of a delegation token service.
+   * Format: vault://{protocol}@{host}:{port}
+   *
+   * @return the server service
+   */
+  public String getServerService() {
+    return VaultCredentialProvider.SCHEME_NAME + "://" + protocol + "@"
+        + host + ":" + port;
+  }
+
+  /**
+   * Service recorded in delegation tokens issued by an auth mount of this
+   * server. Format: vault://{protocol}@{host}:{port}/{auth mount path}
+   *
+   * @param authMountPath the Kerberos auth backend mount path
+   * @return the token service
+   */
+  public String getTokenService(String authMountPath) {
+    return getServerService() + "/" + authMountPath;
   }
 
   /**
