@@ -30,6 +30,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
@@ -42,6 +43,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -282,5 +284,36 @@ public class TestCredentialProviderFactory {
     FileStatus s = fs.getFileStatus(path);
     assertEquals("Permissions should have been retained from the preexisting " +
         "keystore.", "rwxrwxrwx", s.getPermission().toString());
+  }
+
+  @Test
+  public void testAddDelegationTokens() throws Exception {
+    TokenIssuingCredentialProvider.ISSUED.set(0);
+    Configuration conf = new Configuration();
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "user:///,dtissuer://vault-a/,dtissuer://broken/");
+    Credentials creds = new Credentials();
+
+    List<Token<?>> tokens = CredentialProviderFactory.addDelegationTokens(
+        conf, "yarn", creds);
+
+    assertEquals(1, tokens.size());
+    Token<?> token = creds.getToken(new Text("dtissuer://vault-a/"));
+    assertNotNull("Token from the issuing provider", token);
+    assertEquals("yarn", new String(token.getIdentifier(), "UTF-8"));
+    assertEquals(1, creds.numberOfTokens());
+
+    assertEquals("Existing token must not be reissued", 0,
+        CredentialProviderFactory.addDelegationTokens(conf, "yarn", creds)
+            .size());
+    assertEquals(1, TokenIssuingCredentialProvider.ISSUED.get());
+  }
+
+  @Test
+  public void testAddDelegationTokensWithoutProviders() throws Exception {
+    Credentials creds = new Credentials();
+    assertEquals(0, CredentialProviderFactory.addDelegationTokens(
+        new Configuration(), "yarn", creds).size());
+    assertEquals(0, creds.numberOfTokens());
   }
 }

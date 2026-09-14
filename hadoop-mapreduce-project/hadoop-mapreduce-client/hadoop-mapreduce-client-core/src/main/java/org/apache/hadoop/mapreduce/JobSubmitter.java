@@ -450,6 +450,8 @@ class JobSubmitter {
         }
       }
     }
+
+    TokenCache.obtainTokensForCredentialProviders(credentials, conf);
   }
 
   @SuppressWarnings("deprecation")
