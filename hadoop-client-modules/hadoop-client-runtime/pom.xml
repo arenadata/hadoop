@@ -246,6 +246,18 @@
                         <exclude>META-INF/services/java.net.spi.InetAddressResolverProvider</exclude>
                       </excludes>
                     </filter>
+                    <!-- the FFM terminal provider is compiled to Java 22
+                         bytecode; the other jline providers cover the same
+                         role -->
+                    <filter>
+                      <artifact>org.jline:jline</artifact>
+                      <excludes>
+                        <exclude>org/jline/terminal/impl/ffm/*</exclude>
+                        <exclude>org/jline/terminal/impl/ffm/**/*</exclude>
+                        <exclude>META-INF/jline/providers/ffm</exclude>
+                        <exclude>META-INF/native-image/org.jline/jline-terminal-ffm/**/*</exclude>
+                      </excludes>
+                    </filter>
                     <filter>
                       <artifact>com.google.protobuf:protobuf-java</artifact>
                       <excludes>
