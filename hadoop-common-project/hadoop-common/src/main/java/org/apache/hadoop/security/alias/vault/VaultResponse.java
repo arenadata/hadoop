@@ -71,23 +71,4 @@ final class VaultResponse {
     @JsonProperty("keys")
     List<String> keys;
   }
-
-  /**
-   * Response from auth login (e.g. Kerberos):
-   * {@code POST /v1/auth/kerberos/login}.
-   * <pre>
-   * {"auth": {"client_token": "s.xxxxx", ...}}
-   * </pre>
-   */
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  static class AuthLogin {
-    @JsonProperty("auth")
-    AuthLoginData auth;
-  }
-
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  static class AuthLoginData {
-    @JsonProperty("client_token")
-    String clientToken;
-  }
 }
