@@ -45,7 +45,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/x
   <repositories>
     <repository>
       <id>arenadata</id>
-      <url>https://maven.pkg.github.com/arenadata/*</url>
+      <url>https://maven.arenadata.io/arenadata</url>
     </repository>
     <repository>
       <id>${distMgmtSnapshotsId}</id>
