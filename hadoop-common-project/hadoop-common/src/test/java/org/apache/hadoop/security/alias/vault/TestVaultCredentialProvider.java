@@ -228,6 +228,86 @@ public class TestVaultCredentialProvider {
     assertEquals(TEST_URI, provider.toString());
   }
 
+  // --- Identity isolation tests ---
+
+  @Test
+  public void testCachedSecretIsNotSharedBetweenIdentities()
+      throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    VaultCredentialProvider bob = providerAs("bob");
+    when(mockClient.readSecret("secret/data/hadoop/creds/shared.key", "value"))
+        .thenReturn("secret_value");
+
+    assertEquals("secret_value",
+        new String(alice.getCredentialEntry("shared.key").getCredential()));
+    assertEquals("secret_value",
+        new String(bob.getCredentialEntry("shared.key").getCredential()));
+
+    verify(mockClient, times(2))
+        .readSecret("secret/data/hadoop/creds/shared.key", "value");
+  }
+
+  @Test
+  public void testDeleteDropsTheAliasForEveryIdentity() throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    VaultCredentialProvider bob = providerAs("bob");
+    when(mockClient.readSecret("secret/data/hadoop/creds/gone.key", "value"))
+        .thenReturn("value1")
+        .thenReturn("value1")
+        .thenReturn(null);
+    doNothing().when(mockClient)
+        .deleteSecret("secret/metadata/hadoop/creds/gone.key");
+
+    alice.getCredentialEntry("gone.key");
+    bob.getCredentialEntry("gone.key");
+    bob.deleteCredentialEntry("gone.key");
+
+    assertNull(alice.getCredentialEntry("gone.key"));
+  }
+
+  @Test
+  public void testWriteDropsTheAliasForEveryIdentity() throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    VaultCredentialProvider bob = providerAs("bob");
+    when(mockClient.readSecret("secret/data/hadoop/creds/new.key", "value"))
+        .thenReturn("old")
+        .thenReturn(null)
+        .thenReturn("new");
+    doNothing().when(mockClient)
+        .writeSecret("secret/data/hadoop/creds/new.key", "value", "new");
+
+    alice.getCredentialEntry("new.key");
+    bob.createCredentialEntry("new.key", "new".toCharArray());
+
+    assertEquals("new",
+        new String(alice.getCredentialEntry("new.key").getCredential()));
+  }
+
+  @Test
+  public void testDeleteInvalidatesEvenWhenTheWriterDoesNotCache()
+      throws Exception {
+    VaultCredentialProvider reader = providerAs("reader");
+    VaultCredentialProvider writer = new VaultCredentialProvider(
+        new URI(TEST_URI), connInfo, mockClient, false, 0,
+        VaultClientIdentity.forTesting("writer"));
+    when(mockClient.readSecret("secret/data/hadoop/creds/rot.key", "value"))
+        .thenReturn("value1")
+        .thenReturn("value1")
+        .thenReturn(null);
+    doNothing().when(mockClient)
+        .deleteSecret("secret/metadata/hadoop/creds/rot.key");
+
+    reader.getCredentialEntry("rot.key");
+    writer.deleteCredentialEntry("rot.key");
+
+    assertNull(reader.getCredentialEntry("rot.key"));
+  }
+
+  private VaultCredentialProvider providerAs(String name) throws Exception {
+    return new VaultCredentialProvider(new URI(TEST_URI), connInfo,
+        mockClient, true, 60000, VaultClientIdentity.forTesting(name));
+  }
+
   // --- Credential cache tests ---
 
   @Test

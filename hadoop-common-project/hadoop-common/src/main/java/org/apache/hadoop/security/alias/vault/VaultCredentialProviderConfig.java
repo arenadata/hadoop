@@ -110,13 +110,28 @@ public final class VaultCredentialProviderConfig {
 
   public static final String CLIENT_CACHE_MAX_SIZE_KEY =
       CONFIG_PREFIX + "client.cache.max.size";
-  public static final int CLIENT_CACHE_MAX_SIZE_DEFAULT = 16;
+  public static final int CLIENT_CACHE_MAX_SIZE_DEFAULT = 256;
 
   public static final String CACHE_TTL_MS_KEY =
       CONFIG_PREFIX + "cache.ttl.ms";
   public static final long CACHE_TTL_MS_DEFAULT = 600000;
 
+  public static final String CACHE_MAX_SIZE_KEY =
+      CONFIG_PREFIX + "cache.max.size";
+  public static final int CACHE_MAX_SIZE_DEFAULT = 4096;
+
   private VaultCredentialProviderConfig() {
+  }
+
+  /**
+   * The configured auth method, or the default when unset or blank.
+   *
+   * @param conf the Hadoop configuration
+   * @return the auth method name
+   */
+  public static String authMethod(Configuration conf) {
+    String name = conf.getTrimmed(AUTH_METHOD_KEY, AUTH_METHOD_DEFAULT);
+    return name.isEmpty() ? AUTH_METHOD_DEFAULT : name;
   }
 
   /**

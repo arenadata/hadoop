@@ -23,7 +23,6 @@ import java.io.IOException;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.util.KerberosName;
 import org.apache.hadoop.security.token.Token;
@@ -67,7 +66,7 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   public KerberosVaultAuth(Configuration conf,
       VaultConnectionInfo connInfo) throws IOException {
     this(conf, connInfo, VaultAuthRequests.mountPath(conf),
-        resolveUgi(conf));
+        VaultClientIdentity.kerberosLogin(conf));
   }
 
   /**
@@ -87,40 +86,6 @@ public class KerberosVaultAuth implements VaultAuthMethod {
     this.loginUrl = connInfo.getApiUrl(mountPath + "/login");
     this.servicePrincipal = VaultAuthRequests.resolveServicePrincipal(conf,
         connInfo.getHost());
-  }
-
-  private static UserGroupInformation resolveUgi(Configuration conf)
-      throws IOException {
-    String ugiMode = conf.get(
-        VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
-        VaultCredentialProviderConfig.KERBEROS_UGI_MODE_DEFAULT);
-    if (VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT
-        .equalsIgnoreCase(ugiMode)) {
-      UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
-      LOG.debug("Using current UGI for Vault Kerberos auth: {}",
-          ugi.getUserName());
-      return ugi;
-    }
-
-    String principal = conf.get(
-        VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY);
-    String keytab = conf.get(
-        VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY);
-    if (principal == null || principal.isEmpty()) {
-      throw new IOException("Kerberos principal not configured. Set '"
-          + VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY
-          + "' or use ugi.mode=current.");
-    }
-    if (keytab == null || keytab.isEmpty()) {
-      throw new IOException("Kerberos keytab not configured. Set '"
-          + VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY
-          + "' or use ugi.mode=current.");
-    }
-    // Resolve _HOST in client principal to local FQDN
-    String resolvedPrincipal =
-        SecurityUtil.getServerPrincipal(principal, (String) null);
-    return UserGroupInformation
-        .loginUserFromKeytabAndReturnUGI(resolvedPrincipal, keytab);
   }
 
   @Override

@@ -560,11 +560,24 @@
 
 <property>
   <name>hadoop.security.credential.vault.client.cache.max.size</name>
-  <value>16</value>
+  <value>256</value>
   <description>
     Maximum number of VaultHttpClient instances cached per JVM.
-    Each unique Vault base URL gets its own client. In most deployments
-    this is 1-2.
+    Each Vault server gets one client per identity that authenticates to
+    it: the configured token, the Kerberos principal, or the session
+    holding a delegation token. A process with one identity needs 1-2
+    entries; one that reads credentials on behalf of many users needs
+    room for all of them, because past the limit every credential read
+    costs a fresh Vault login, and a Kerberos one a KDC round trip too.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.cache.max.size</name>
+  <value>4096</value>
+  <description>
+    Maximum number of aliases held in the credential cache per JVM.
+    Each cached alias keeps one value per identity that read it.
   </description>
 </property>
 

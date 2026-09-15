@@ -21,6 +21,7 @@ package org.apache.hadoop.security.alias.vault;
 import java.io.IOException;
 import java.net.URI;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -48,12 +49,15 @@ import org.slf4j.LoggerFactory;
  * <p>The provider maintains two levels of caching within the JVM:
  * <ul>
  *   <li><b>Client cache</b> — a static map of {@link VaultHttpClient}
- *       instances keyed by Vault base URL, so that provider re-creation
- *       (e.g. repeated {@code Configuration.getPassword()} calls) reuses
- *       the already-authenticated client.</li>
+ *       instances keyed by {@link VaultClientIdentity}, so that provider
+ *       re-creation (e.g. repeated {@code Configuration.getPassword()}
+ *       calls) reuses the already-authenticated client, and only for the
+ *       identity that authenticated it.</li>
  *   <li><b>Credential cache</b> — a Guava {@link Cache} with
  *       {@code expireAfterWrite} TTL, to avoid repeated HTTP round-trips
- *       for the same alias within the same JVM.</li>
+ *       for the same alias within the same JVM. Entries belong to the
+ *       identity that read them; writes and deletes drop the alias for
+ *       every identity.</li>
  * </ul>
  *
  * {@link #flush()} is a no-op. Writes and deletes update the cache
@@ -69,16 +73,23 @@ public class VaultCredentialProvider extends CredentialProvider
       LoggerFactory.getLogger(VaultCredentialProvider.class);
 
   /** Static client cache, lazily initialized on first use. */
-  private static volatile Cache<String, VaultHttpClient> clientCache;
+  private static volatile Cache<VaultClientIdentity, VaultHttpClient>
+      clientCache;
 
-  /** Static credential cache, lazily initialized on first use. */
-  private static volatile Cache<String, String> credentialCache;
+  /**
+   * Static credential cache, lazily initialized on first use. A value is
+   * held per identity that read it, so it is never served to an identity
+   * Vault has not granted it to; a write or a delete drops the alias for
+   * all of them.
+   */
+  private static volatile Cache<CredentialKey, String> credentialCache;
 
   private final URI uri;
   private final VaultConnectionInfo connInfo;
   private final VaultHttpClient httpClient;
   private final boolean cacheEnabled;
   private final Configuration conf;
+  private final VaultClientIdentity identity;
 
   /**
    * Create a Vault credential provider.
@@ -101,14 +112,19 @@ public class VaultCredentialProvider extends CredentialProvider
       initCredentialCache(conf);
     }
 
-    String baseUrl = connInfo.getBaseUrl();
     try {
-      this.httpClient = clientCache.get(baseUrl, () ->
+      this.identity = VaultClientIdentity.of(conf, connInfo);
+    } catch (IOException e) {
+      throw new IOException("Failed to create VaultHttpClient for "
+          + connInfo.getBaseUrl(), e);
+    }
+    try {
+      this.httpClient = clientCache.get(identity, () ->
           new VaultHttpClient(conf, connInfo,
-              createAuthMethod(conf, connInfo)));
+              identity.createAuthMethod(conf, connInfo)));
     } catch (ExecutionException e) {
-      throw new IOException("Failed to create VaultHttpClient for " + baseUrl,
-          e.getCause());
+      throw new IOException("Failed to create VaultHttpClient for "
+          + connInfo.getBaseUrl(), e.getCause());
     }
 
     LOG.debug("Created VaultCredentialProvider for {}", uri);
@@ -119,11 +135,8 @@ public class VaultCredentialProvider extends CredentialProvider
    */
   VaultCredentialProvider(URI uri, VaultConnectionInfo connInfo,
       VaultHttpClient httpClient) {
-    this.uri = uri;
-    this.conf = new Configuration(false);
-    this.connInfo = connInfo;
-    this.httpClient = httpClient;
-    this.cacheEnabled = false;
+    this(uri, connInfo, httpClient, false, 0,
+        VaultClientIdentity.forTesting("test"));
   }
 
   /**
@@ -131,78 +144,28 @@ public class VaultCredentialProvider extends CredentialProvider
    */
   VaultCredentialProvider(URI uri, VaultConnectionInfo connInfo,
       VaultHttpClient httpClient, boolean cacheEnabled, long cacheTtlMs) {
+    this(uri, connInfo, httpClient, cacheEnabled, cacheTtlMs,
+        VaultClientIdentity.forTesting("test"));
+  }
+
+  /**
+   * Package-private constructor for testing a given identity.
+   */
+  VaultCredentialProvider(URI uri, VaultConnectionInfo connInfo,
+      VaultHttpClient httpClient, boolean cacheEnabled, long cacheTtlMs,
+      VaultClientIdentity identity) {
     this.uri = uri;
     this.conf = new Configuration(false);
     this.connInfo = connInfo;
     this.httpClient = httpClient;
     this.cacheEnabled = cacheEnabled;
-    if (cacheEnabled) {
+    this.identity = identity;
+    if (cacheEnabled && credentialCache == null) {
       credentialCache = CacheBuilder.newBuilder()
           .expireAfterWrite(cacheTtlMs, TimeUnit.MILLISECONDS)
+          .maximumSize(VaultCredentialProviderConfig.CACHE_MAX_SIZE_DEFAULT)
           .build();
     }
-  }
-
-  private static String authMethodName(Configuration conf) {
-    String name = conf.getTrimmed(
-        VaultCredentialProviderConfig.AUTH_METHOD_KEY,
-        VaultCredentialProviderConfig.AUTH_METHOD_DEFAULT);
-    return name.isEmpty()
-        ? VaultCredentialProviderConfig.AUTH_METHOD_DEFAULT : name;
-  }
-
-  /**
-   * Pick the auth method for {@code hadoop.security.credential.vault.auth.method}.
-   * With {@code kerberos}, a process without Kerberos credentials that holds
-   * a Vault delegation token for this server (a YARN container) logs in
-   * with the token instead of SPNEGO. Credentials are those of the current
-   * user, or of the real user behind a proxy user.
-   */
-  static VaultAuthMethod createAuthMethod(Configuration conf,
-      VaultConnectionInfo connInfo) throws IOException {
-    String name = authMethodName(conf);
-    if (VaultCredentialProviderConfig.AUTH_METHOD_TOKEN
-        .equalsIgnoreCase(name)) {
-      return new TokenVaultAuth(conf);
-    }
-    boolean delegation = VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION
-        .equalsIgnoreCase(name);
-    if (!delegation && !VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS
-        .equalsIgnoreCase(name)) {
-      throw new IOException("Unsupported Vault auth method '" + name
-          + "'; expected " + VaultCredentialProviderConfig.AUTH_METHOD_TOKEN
-          + ", " + VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS + " or "
-          + VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION);
-    }
-    String mountPath = VaultAuthRequests.mountPath(conf);
-    UserGroupInformation ugi = VaultDelegationTokens.actualUser();
-    Token<?> token = VaultDelegationTokens.selectToken(
-        ugi.getCredentials(), connInfo, mountPath);
-    if (delegation) {
-      if (token == null) {
-        throw new IOException("User " + ugi.getUserName()
-            + " has no Vault delegation token for "
-            + connInfo.getServerService());
-      }
-      return new VaultDelegationTokenAuth(connInfo, mountPath);
-    }
-    if (!ugi.hasKerberosCredentials()) {
-      if (token != null) {
-        LOG.debug("User {} has no Kerberos credentials, using the Vault "
-            + "delegation token for {}", ugi.getUserName(),
-            connInfo.getServerService());
-        return new VaultDelegationTokenAuth(connInfo, mountPath);
-      }
-      if (VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT
-          .equalsIgnoreCase(conf.get(
-              VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
-              VaultCredentialProviderConfig.KERBEROS_UGI_MODE_DEFAULT))) {
-        throw new IOException("User " + ugi.getUserName()
-            + " has neither Kerberos credentials nor a Vault delegation "
-            + "token for " + connInfo.getServerService());
-      }
-    }
-    return new KerberosVaultAuth(conf, connInfo);
   }
 
   /**
@@ -228,7 +191,7 @@ public class VaultCredentialProvider extends CredentialProvider
   @Override
   public Token<?> getDelegationToken(String renewer) throws IOException {
     if (!VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS
-        .equalsIgnoreCase(authMethodName(conf))) {
+        .equalsIgnoreCase(VaultCredentialProviderConfig.authMethod(conf))) {
       LOG.debug("Not issuing a Vault delegation token for {}: auth method is "
           + "not kerberos", connInfo.getServerService());
       return null;
@@ -277,8 +240,12 @@ public class VaultCredentialProvider extends CredentialProvider
           long ttlMs = conf.getLong(
               VaultCredentialProviderConfig.CACHE_TTL_MS_KEY,
               VaultCredentialProviderConfig.CACHE_TTL_MS_DEFAULT);
+          int maxSize = conf.getInt(
+              VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY,
+              VaultCredentialProviderConfig.CACHE_MAX_SIZE_DEFAULT);
           credentialCache = CacheBuilder.newBuilder()
               .expireAfterWrite(ttlMs, TimeUnit.MILLISECONDS)
+              .maximumSize(maxSize)
               .build();
         }
       }
@@ -293,8 +260,7 @@ public class VaultCredentialProvider extends CredentialProvider
     String dataPath = connInfo.buildDataPath(alias);
 
     if (cacheEnabled) {
-      String cacheKey = buildCacheKey(dataPath);
-      String cached = credentialCache.getIfPresent(cacheKey);
+      String cached = credentialCache.getIfPresent(cacheKey(dataPath));
       if (cached != null) {
         LOG.debug("Credential cache hit for {}", alias);
         return newCredentialEntry(alias, cached.toCharArray());
@@ -307,7 +273,7 @@ public class VaultCredentialProvider extends CredentialProvider
     }
 
     if (cacheEnabled) {
-      credentialCache.put(buildCacheKey(dataPath), value);
+      credentialCache.put(cacheKey(dataPath), value);
     }
     return newCredentialEntry(alias, value.toCharArray());
   }
@@ -335,8 +301,9 @@ public class VaultCredentialProvider extends CredentialProvider
     String value = new String(credential);
     httpClient.writeSecret(dataPath, connInfo.getSecretKey(), value);
 
+    invalidateForAllIdentities(dataPath);
     if (cacheEnabled) {
-      credentialCache.put(buildCacheKey(dataPath), value);
+      credentialCache.put(cacheKey(dataPath), value);
     }
     return newCredentialEntry(name, credential);
   }
@@ -356,9 +323,7 @@ public class VaultCredentialProvider extends CredentialProvider
     String metadataPath = connInfo.buildMetadataPath(name);
     httpClient.deleteSecret(metadataPath);
 
-    if (cacheEnabled) {
-      credentialCache.invalidate(buildCacheKey(connInfo.buildDataPath(name)));
-    }
+    invalidateForAllIdentities(connInfo.buildDataPath(name));
   }
 
   @Override
@@ -376,8 +341,62 @@ public class VaultCredentialProvider extends CredentialProvider
     return uri.toString();
   }
 
-  private String buildCacheKey(String path) {
-    return connInfo.getBaseUrl() + "|" + path + "|" + connInfo.getSecretKey();
+  private CredentialKey cacheKey(String path) {
+    return new CredentialKey(identity, connInfo.getBaseUrl(), path,
+        connInfo.getSecretKey());
+  }
+
+  /**
+   * A write or a delete changes what Vault serves to every identity, not
+   * just to this caller, so all of their entries go. Runs whether or not
+   * this provider caches: the entries belong to the JVM.
+   */
+  private void invalidateForAllIdentities(String path) {
+    Cache<CredentialKey, String> cache = credentialCache;
+    if (cache != null) {
+      cache.asMap().keySet().removeIf(key -> key.isAlias(
+          connInfo.getBaseUrl(), path, connInfo.getSecretKey()));
+    }
+  }
+
+  /** One alias, as read by one identity. */
+  private static final class CredentialKey {
+    private final VaultClientIdentity identity;
+    private final String baseUrl;
+    private final String path;
+    private final String secretKey;
+
+    CredentialKey(VaultClientIdentity identity, String baseUrl, String path,
+        String secretKey) {
+      this.identity = identity;
+      this.baseUrl = baseUrl;
+      this.path = path;
+      this.secretKey = secretKey;
+    }
+
+    boolean isAlias(String otherBaseUrl, String otherPath,
+        String otherSecretKey) {
+      return baseUrl.equals(otherBaseUrl) && path.equals(otherPath)
+          && secretKey.equals(otherSecretKey);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (!(o instanceof CredentialKey)) {
+        return false;
+      }
+      CredentialKey that = (CredentialKey) o;
+      return identity.equals(that.identity)
+          && isAlias(that.baseUrl, that.path, that.secretKey);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(identity, baseUrl, path, secretKey);
+    }
   }
 
   /**
@@ -386,9 +405,11 @@ public class VaultCredentialProvider extends CredentialProvider
   static void clearCaches() {
     if (clientCache != null) {
       clientCache.invalidateAll();
+      clientCache = null;
     }
     if (credentialCache != null) {
       credentialCache.invalidateAll();
+      credentialCache = null;
     }
   }
 

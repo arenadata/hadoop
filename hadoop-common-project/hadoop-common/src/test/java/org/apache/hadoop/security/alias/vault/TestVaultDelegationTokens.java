@@ -97,6 +97,9 @@ public class TestVaultDelegationTokens {
   private final Set<String> vaultTokens = ConcurrentHashMap.newKeySet();
   private final List<String> requests =
       Collections.synchronizedList(new ArrayList<>());
+  /** Vault token each read of the secret carried. */
+  private final List<String> secretReads =
+      Collections.synchronizedList(new ArrayList<>());
 
   @BeforeClass
   public static void startKdc() throws Exception {
@@ -113,8 +116,10 @@ public class TestVaultDelegationTokens {
     server = HttpServer.create(new InetSocketAddress(0), 0);
     port = server.getAddress().getPort();
     server.createContext("/v1/" + AUTH_MOUNT + "/", this::handleAuth);
-    server.createContext(MockVault.SECRET_PATH,
-        exchange -> MockVault.handleSecret(exchange, vaultTokens::contains));
+    server.createContext(MockVault.SECRET_PATH, exchange -> {
+      secretReads.add(exchange.getRequestHeaders().getFirst("X-Vault-Token"));
+      MockVault.handleSecret(exchange, vaultTokens::contains);
+    });
     server.start();
 
     providerUri = "vault://http@localhost:" + port + "/secret/hadoop/creds";
@@ -324,6 +329,88 @@ public class TestVaultDelegationTokens {
   }
 
   @Test
+  public void testKerberosClientIsReusedForOneIdentity() throws Exception {
+    provider(conf);
+    provider(conf);
+
+    assertEquals(requests.toString(), 1, requests.stream()
+        .filter(request -> request.startsWith("spnego-login")).count());
+  }
+
+  @Test
+  public void testClientIsNotSharedBetweenSessionsOfOneUser()
+      throws Exception {
+    Configuration containerConf = containerConf();
+    UserGroupInformation session = container("spark", credentialsWithToken());
+    UserGroupInformation other = container("spark", credentialsWithToken());
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(session, containerConf));
+    assertEquals(MockVault.SECRET_VALUE, readAs(other, containerConf));
+
+    assertEquals(requests.toString(), 2, loginCount());
+    assertEquals(secretReads.toString(),
+        Arrays.asList("s.dt-1", "s.dt-2"), secretReads);
+  }
+
+  @Test
+  public void testRevokedTokenOfAnotherSessionIsRejected() throws Exception {
+    Configuration containerConf = containerConf();
+    UserGroupInformation session = container("spark", credentialsWithToken());
+    Credentials revoked = credentialsWithToken();
+    expiries.remove(2);
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(session, containerConf));
+
+    intercept(IOException.class, "Configuration problem with provider path",
+        () -> readAs(container("spark", revoked), containerConf));
+    assertEquals(secretReads.toString(),
+        Collections.singletonList("s.dt-1"), secretReads);
+  }
+
+  @Test
+  public void testDelegationLoginUsesItsOwnersToken() throws Exception {
+    UserGroupInformation owner = container("spark", credentialsWithToken());
+    UserGroupInformation caller = container("hive", credentialsWithToken());
+    VaultConnectionInfo vault = new VaultConnectionInfo(new URI(providerUri));
+    VaultAuthMethod auth =
+        new VaultDelegationTokenAuth(vault, AUTH_MOUNT, owner);
+
+    caller.doAs((PrivilegedExceptionAction<String>) () ->
+        auth.authenticate(VaultHttpClient.unauthenticated(conf, vault)));
+
+    assertTrue(requests.toString(), requests.contains("token-login 1"));
+    assertFalse(requests.toString(), requests.contains("token-login 2"));
+  }
+
+  @Test
+  public void testClientIsReusedWithinOneSession() throws Exception {
+    Configuration containerConf = containerConf();
+    UserGroupInformation session = container("spark", credentialsWithToken());
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(session, containerConf));
+    assertEquals(MockVault.SECRET_VALUE, readAs(session, containerConf));
+
+    assertEquals(requests.toString(), 1, loginCount());
+    assertEquals(2, secretReads.size());
+  }
+
+  @Test
+  public void testCachedSecretIsNotServedToAnotherSession() throws Exception {
+    Configuration containerConf = containerConf();
+    containerConf.setBoolean(VaultCredentialProviderConfig.CACHE_ENABLED_KEY,
+        true);
+    UserGroupInformation session = container("spark", credentialsWithToken());
+    UserGroupInformation other = container("spark", credentialsWithToken());
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(session, containerConf));
+    assertEquals(MockVault.SECRET_VALUE, readAs(session, containerConf));
+    assertEquals(MockVault.SECRET_VALUE, readAs(other, containerConf));
+
+    assertEquals(secretReads.toString(), Arrays.asList("s.dt-1", "s.dt-2"),
+        secretReads);
+  }
+
+  @Test
   public void testTokenFoundByServerWhenConfiguredMountDiffers()
       throws Exception {
     Credentials creds = new Credentials();
@@ -371,11 +458,34 @@ public class TestVaultDelegationTokens {
 
   /** A YARN container: no Kerberos credentials, only the job's tokens. */
   private UserGroupInformation container(Credentials creds) {
-    UserGroupInformation container =
-        UserGroupInformation.createRemoteUser("spark");
-    container.addCredentials(creds);
     VaultCredentialProvider.clearCaches();
+    return container("spark", creds);
+  }
+
+  /** A YARN container of the given user. */
+  private UserGroupInformation container(String user, Credentials creds) {
+    UserGroupInformation container =
+        UserGroupInformation.createRemoteUser(user);
+    container.addCredentials(creds);
     return container;
+  }
+
+  /** Credentials holding a token this server has just issued. */
+  private Credentials credentialsWithToken() throws Exception {
+    Credentials creds = new Credentials();
+    Token<?> token = issueToken(RENEWER_PRINCIPAL);
+    creds.addToken(token.getService(), token);
+    return creds;
+  }
+
+  private long loginCount() {
+    return requests.stream().filter(r -> r.startsWith("token-login")).count();
+  }
+
+  private String readAs(UserGroupInformation session,
+      Configuration sessionConf) throws Exception {
+    return session.doAs((PrivilegedExceptionAction<String>) () ->
+        new String(sessionConf.getPassword("db.password")));
   }
 
   /** Cluster core-site as seen in a container: no principal or keytab. */
