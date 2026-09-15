@@ -45,6 +45,7 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -52,6 +53,7 @@ import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.security.alias.vault.VaultKerberosTestFixture.CLIENT_PRINCIPAL;
 import static org.apache.hadoop.security.alias.vault.VaultKerberosTestFixture.RENEWER_PRINCIPAL;
@@ -346,6 +348,22 @@ public class TestVaultDelegationTokens {
     assertEquals(MockVault.SECRET_VALUE, new String(
         provider.getCredentialEntry("db.password").getCredential()));
     assertEquals(requests.toString(), 1, spnegoLoginCount());
+  }
+
+  @Test
+  public void testCacheSettingsOfALaterConfigurationAreReported()
+      throws Exception {
+    GenericTestUtils.LogCapturer logs = GenericTestUtils.LogCapturer
+        .captureLogs(LoggerFactory.getLogger(VaultCredentialProvider.class));
+    readAs(clientUgi, conf);
+
+    Configuration lateConf = new Configuration(conf);
+    lateConf.setInt(
+        VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_KEY, 8);
+    readAs(clientUgi, lateConf);
+
+    assertTrue(logs.getOutput(), logs.getOutput().contains(
+        VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_KEY + "=8"));
   }
 
   @Test

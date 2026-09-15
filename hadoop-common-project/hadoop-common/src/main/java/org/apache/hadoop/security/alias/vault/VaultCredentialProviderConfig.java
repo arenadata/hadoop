@@ -167,6 +167,40 @@ public final class VaultCredentialProviderConfig {
   }
 
   /**
+   * The systemd credential file holding the Vault token, or null when
+   * systemd passed none. Which token is used and which identity it is
+   * cached under must follow the same decision, so both go through here.
+   *
+   * @param conf the Hadoop configuration
+   * @return the credential file, or null if there is none
+   */
+  static File systemdCredentialFile(Configuration conf) {
+    return systemdCredentialFile(conf,
+        System.getenv(CREDENTIALS_DIRECTORY_ENV));
+  }
+
+  /**
+   * The systemd credential file under the given directory, or null when
+   * there is no directory or no file in it. Package-private for testability.
+   *
+   * @param conf the Hadoop configuration
+   * @param credDir the credentials directory path, or null if not set
+   * @return the credential file, or null if there is none
+   */
+  static File systemdCredentialFile(Configuration conf, String credDir) {
+    if (credDir == null || credDir.isEmpty()) {
+      return null;
+    }
+    File credFile = new File(credDir, conf.get(SYSTEMD_CREDENTIAL_NAME_KEY,
+        SYSTEMD_CREDENTIAL_NAME_DEFAULT));
+    if (!credFile.isFile()) {
+      LOG.debug("systemd credential file not found: {}", credFile);
+      return null;
+    }
+    return credFile;
+  }
+
+  /**
    * Read the Vault token from a systemd credential file.
    *
    * @param conf the Hadoop configuration
@@ -186,15 +220,8 @@ public final class VaultCredentialProviderConfig {
    * @return the token string, or null if not available
    */
   static String readSystemdCredential(Configuration conf, String credDir) {
-    if (credDir == null || credDir.isEmpty()) {
-      return null;
-    }
-
-    String credName = conf.get(SYSTEMD_CREDENTIAL_NAME_KEY,
-        SYSTEMD_CREDENTIAL_NAME_DEFAULT);
-    File credFile = new File(credDir, credName);
-    if (!credFile.isFile()) {
-      LOG.debug("systemd credential file not found: {}", credFile);
+    File credFile = systemdCredentialFile(conf, credDir);
+    if (credFile == null) {
       return null;
     }
 

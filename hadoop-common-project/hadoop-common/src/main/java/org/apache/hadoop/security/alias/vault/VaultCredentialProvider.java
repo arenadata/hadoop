@@ -21,7 +21,10 @@ package org.apache.hadoop.security.alias.vault;
 import java.io.IOException;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -34,6 +37,7 @@ import org.apache.hadoop.security.token.DelegationTokenIssuer;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
 import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.UncheckedExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,6 +89,12 @@ public class VaultCredentialProvider extends CredentialProvider
    */
   private static volatile Cache<CredentialKey, String> credentialCache;
 
+  /** Settings the JVM-wide caches were built with, by property. */
+  private static final Map<String, String> CACHE_SETTINGS =
+      new ConcurrentHashMap<>();
+  private static final Set<String> WARNED_CACHE_SETTINGS =
+      ConcurrentHashMap.newKeySet();
+
   private final URI uri;
   private final VaultConnectionInfo connInfo;
   /** Set by the test constructors only; otherwise the client cache. */
@@ -113,6 +123,7 @@ public class VaultCredentialProvider extends CredentialProvider
     if (cacheEnabled) {
       initCredentialCache(conf);
     }
+    warnOnIgnoredCacheSettings(conf);
 
     try {
       this.identity = VaultClientIdentity.of(conf, connInfo);
@@ -220,7 +231,7 @@ public class VaultCredentialProvider extends CredentialProvider
       return clientCache.get(identity, () ->
           new VaultHttpClient(conf, connInfo,
               identity.createAuthMethod(conf, connInfo)));
-    } catch (ExecutionException e) {
+    } catch (ExecutionException | UncheckedExecutionException e) {
       throw new IOException("Failed to create VaultHttpClient for "
           + connInfo.getBaseUrl(), e.getCause());
     }
@@ -236,6 +247,10 @@ public class VaultCredentialProvider extends CredentialProvider
           long idleMs = conf.getLong(
               VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY,
               VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_DEFAULT);
+          recordCacheSetting(
+              VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_KEY, maxSize);
+          recordCacheSetting(
+              VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, idleMs);
           clientCache = CacheBuilder.newBuilder()
               .maximumSize(maxSize)
               .expireAfterAccess(idleMs, TimeUnit.MILLISECONDS)
@@ -262,6 +277,10 @@ public class VaultCredentialProvider extends CredentialProvider
           int maxSize = conf.getInt(
               VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY,
               VaultCredentialProviderConfig.CACHE_MAX_SIZE_DEFAULT);
+          recordCacheSetting(
+              VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, ttlMs);
+          recordCacheSetting(
+              VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY, maxSize);
           credentialCache = CacheBuilder.newBuilder()
               .expireAfterWrite(ttlMs, TimeUnit.MILLISECONDS)
               .maximumSize(maxSize)
@@ -269,6 +288,26 @@ public class VaultCredentialProvider extends CredentialProvider
         }
       }
     }
+  }
+
+  private static void recordCacheSetting(String key, Number value) {
+    CACHE_SETTINGS.put(key, value.toString());
+  }
+
+  /**
+   * The caches are JVM-wide and keep the settings of the configuration
+   * that built them, so a later one asking for different values gets the
+   * values already in force. Report each such property once.
+   */
+  private static void warnOnIgnoredCacheSettings(Configuration conf) {
+    CACHE_SETTINGS.forEach((key, inForce) -> {
+      String asked = conf.getTrimmed(key);
+      if (asked != null && !asked.equals(inForce)
+          && WARNED_CACHE_SETTINGS.add(key)) {
+        LOG.warn("{}={} is ignored: the JVM-wide Vault cache it configures "
+            + "was built with {}", key, asked, inForce);
+      }
+    });
   }
 
   @Override
@@ -286,7 +325,7 @@ public class VaultCredentialProvider extends CredentialProvider
       }
     }
 
-    String value = client().readSecret(dataPath, connInfo.getSecretKey());
+    String value = readSecret(dataPath);
     if (value == null) {
       return null;
     }
@@ -309,18 +348,18 @@ public class VaultCredentialProvider extends CredentialProvider
     if (name == null || name.isEmpty()) {
       throw new IOException("Credential alias must not be null or empty");
     }
-    // Check if already exists
-    CredentialEntry existing = getCredentialEntry(name);
-    if (existing != null) {
+    String dataPath = connInfo.buildDataPath(name);
+    if (readSecret(dataPath) != null) {
       throw new IOException("Credential " + name
           + " already exists in " + this);
     }
 
-    String dataPath = connInfo.buildDataPath(name);
     String value = new String(credential);
-    client().writeSecret(dataPath, connInfo.getSecretKey(), value);
-
-    invalidateForAllIdentities(dataPath);
+    try {
+      client().writeSecret(dataPath, connInfo.getSecretKey(), value);
+    } finally {
+      invalidateForAllIdentities(dataPath);
+    }
     if (cacheEnabled) {
       credentialCache.put(cacheKey(dataPath), value);
     }
@@ -332,17 +371,26 @@ public class VaultCredentialProvider extends CredentialProvider
     if (name == null || name.isEmpty()) {
       throw new IOException("Credential alias must not be null or empty");
     }
-    // Check if exists
-    CredentialEntry existing = getCredentialEntry(name);
-    if (existing == null) {
+    String dataPath = connInfo.buildDataPath(name);
+    if (readSecret(dataPath) == null) {
       throw new IOException("Credential " + name
           + " does not exist in " + this);
     }
 
-    String metadataPath = connInfo.buildMetadataPath(name);
-    client().deleteSecret(metadataPath);
+    try {
+      client().deleteSecret(connInfo.buildMetadataPath(name));
+    } finally {
+      invalidateForAllIdentities(dataPath);
+    }
+  }
 
-    invalidateForAllIdentities(connInfo.buildDataPath(name));
+  /**
+   * A read straight from Vault. The write path checks what is there now,
+   * which the cache cannot answer for and must not learn: a value read to
+   * decide a write outlives the write when it fails.
+   */
+  private String readSecret(String dataPath) throws IOException {
+    return client().readSecret(dataPath, connInfo.getSecretKey());
   }
 
   @Override
@@ -430,6 +478,8 @@ public class VaultCredentialProvider extends CredentialProvider
       credentialCache.invalidateAll();
       credentialCache = null;
     }
+    CACHE_SETTINGS.clear();
+    WARNED_CACHE_SETTINGS.clear();
   }
 
   /**

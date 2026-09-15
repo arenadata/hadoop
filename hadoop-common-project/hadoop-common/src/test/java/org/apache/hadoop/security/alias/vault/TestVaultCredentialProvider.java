@@ -37,6 +37,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -254,6 +255,7 @@ public class TestVaultCredentialProvider {
     when(mockClient.readSecret("secret/data/hadoop/creds/gone.key", "value"))
         .thenReturn("value1")
         .thenReturn("value1")
+        .thenReturn("value1")
         .thenReturn(null);
     doNothing().when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/gone.key");
@@ -301,6 +303,52 @@ public class TestVaultCredentialProvider {
     writer.deleteCredentialEntry("rot.key");
 
     assertNull(reader.getCredentialEntry("rot.key"));
+  }
+
+  @Test
+  public void testFailedDeleteDoesNotLeaveTheValueCached() throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    when(mockClient.readSecret("secret/data/hadoop/creds/stuck.key", "value"))
+        .thenReturn("value1");
+    doThrow(new IOException("vault said 403")).when(mockClient)
+        .deleteSecret("secret/metadata/hadoop/creds/stuck.key");
+
+    alice.getCredentialEntry("stuck.key");
+    try {
+      alice.deleteCredentialEntry("stuck.key");
+      fail("should throw");
+    } catch (IOException e) {
+      assertEquals("vault said 403", e.getMessage());
+    }
+    alice.getCredentialEntry("stuck.key");
+
+    verify(mockClient, times(3))
+        .readSecret("secret/data/hadoop/creds/stuck.key", "value");
+  }
+
+  @Test
+  public void testFailedWriteDropsTheCachedValue() throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    VaultCredentialProvider bob = providerAs("bob");
+    when(mockClient.readSecret("secret/data/hadoop/creds/half.key", "value"))
+        .thenReturn("old")
+        .thenReturn(null)
+        .thenReturn("old");
+    doThrow(new IOException("vault said 403")).when(mockClient)
+        .writeSecret("secret/data/hadoop/creds/half.key", "value", "new");
+
+    alice.getCredentialEntry("half.key");
+    try {
+      bob.createCredentialEntry("half.key", "new".toCharArray());
+      fail("should throw");
+    } catch (IOException e) {
+      assertEquals("vault said 403", e.getMessage());
+    }
+
+    assertEquals("old",
+        new String(alice.getCredentialEntry("half.key").getCredential()));
+    verify(mockClient, times(3))
+        .readSecret("secret/data/hadoop/creds/half.key", "value");
   }
 
   private VaultCredentialProvider providerAs(String name) throws Exception {
@@ -371,20 +419,20 @@ public class TestVaultCredentialProvider {
 
     when(mockClient.readSecret("secret/data/hadoop/creds/del.key", "value"))
         .thenReturn("value1")
+        .thenReturn("value1")
         .thenReturn(null);
     doNothing().when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/del.key");
 
     // Populate cache
     cached.getCredentialEntry("del.key");
-    // Delete: existence check is a cache hit, then invalidates cache
+    // Delete: existence check goes to Vault, then invalidates cache
     cached.deleteCredentialEntry("del.key");
     // Next read should go to Vault (cache was cleared by delete)
     assertNull(cached.getCredentialEntry("del.key"));
 
-    // 2 calls: initial read + post-delete read
-    // (existence check in delete is served from cache)
-    verify(mockClient, times(2))
+    // 3 calls: initial read, the existence check, post-delete read
+    verify(mockClient, times(3))
         .readSecret("secret/data/hadoop/creds/del.key", "value");
   }
 

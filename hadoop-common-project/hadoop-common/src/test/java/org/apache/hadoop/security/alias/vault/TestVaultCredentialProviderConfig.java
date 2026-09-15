@@ -29,6 +29,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
 /**
@@ -105,6 +106,28 @@ public class TestVaultCredentialProviderConfig {
     String token = VaultCredentialProviderConfig.readSystemdCredential(
         new Configuration(), null);
     assertNull(token);
+  }
+
+  @Test
+  public void testSystemdCredentialFileIsTheOneThatIsRead() throws Exception {
+    File credDir = tempDir.newFolder("credentials-present");
+    File credFile = new File(credDir, "vault-token");
+    writeFile(credFile, "s.systemd-token-123");
+
+    File resolved = VaultCredentialProviderConfig.systemdCredentialFile(
+        new Configuration(), credDir.getAbsolutePath());
+
+    assertNotNull(resolved);
+    assertEquals(credFile.getAbsolutePath(), resolved.getAbsolutePath());
+  }
+
+  @Test
+  public void testSystemdCredentialFileIsNullWhenTheFileIsMissing()
+      throws Exception {
+    File credDir = tempDir.newFolder("credentials-missing");
+
+    assertNull(VaultCredentialProviderConfig.systemdCredentialFile(
+        new Configuration(), credDir.getAbsolutePath()));
   }
 
   @Test

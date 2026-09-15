@@ -18,8 +18,11 @@
 
 package org.apache.hadoop.security.alias.vault;
 
+import java.io.File;
 import java.io.IOException;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -49,6 +52,10 @@ abstract class VaultClientIdentity {
 
   private static final Logger LOG =
       LoggerFactory.getLogger(VaultClientIdentity.class);
+
+  /** Configured principal to the same principal with {@code _HOST} expanded. */
+  private static final Map<String, String> SERVER_PRINCIPALS =
+      new ConcurrentHashMap<>();
 
   private final String baseUrl;
 
@@ -122,13 +129,16 @@ abstract class VaultClientIdentity {
       }
     }
     return isCurrentUgiMode(conf)
-        ? OfKerberos.ofCurrentUser(baseUrl, mountPath)
+        ? OfKerberos.ofUser(baseUrl, mountPath, ugi)
         : OfKerberos.ofKeytab(baseUrl, mountPath, conf);
   }
 
   /**
-   * The UGI a Kerberos login authenticates as: the current one, or a
-   * login from the configured principal and keytab.
+   * The UGI a Kerberos login authenticates as: the calling user, or a
+   * login from the configured principal and keytab. A proxy user has no
+   * Kerberos credentials of its own and Vault has no notion of acting on
+   * behalf of someone, so an impersonated call authenticates as the real
+   * user behind it.
    *
    * @param conf the configuration
    * @return the UGI to authenticate with
@@ -138,7 +148,7 @@ abstract class VaultClientIdentity {
   static UserGroupInformation kerberosLogin(Configuration conf)
       throws IOException {
     if (isCurrentUgiMode(conf)) {
-      UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+      UserGroupInformation ugi = VaultDelegationTokens.actualUser();
       LOG.debug("Using current UGI for Vault Kerberos auth: {}",
           ugi.getUserName());
       return ugi;
@@ -157,11 +167,30 @@ abstract class VaultClientIdentity {
           + VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY
           + "' or use ugi.mode=current.");
     }
-    // Resolve _HOST in client principal to local FQDN
-    String resolvedPrincipal =
-        SecurityUtil.getServerPrincipal(principal, (String) null);
     return UserGroupInformation
-        .loginUserFromKeytabAndReturnUGI(resolvedPrincipal, keytab);
+        .loginUserFromKeytabAndReturnUGI(serverPrincipal(principal), keytab);
+  }
+
+  /**
+   * The configured principal with {@code _HOST} expanded to the local
+   * FQDN. Memoized: the identity names the principal the login will use,
+   * and it is built on every provider creation, while the expansion
+   * resolves the host name.
+   *
+   * @param principal the configured principal, possibly null
+   * @return the principal to authenticate as
+   * @throws IOException if the host name cannot be resolved
+   */
+  private static String serverPrincipal(String principal) throws IOException {
+    if (principal == null || principal.isEmpty()) {
+      return principal;
+    }
+    String expanded = SERVER_PRINCIPALS.get(principal);
+    if (expanded == null) {
+      expanded = SecurityUtil.getServerPrincipal(principal, (String) null);
+      SERVER_PRINCIPALS.put(principal, expanded);
+    }
+    return expanded;
   }
 
   static boolean isCurrentUgiMode(Configuration conf) {
@@ -188,12 +217,10 @@ abstract class VaultClientIdentity {
     if (configured != null && !configured.isEmpty()) {
       return "conf:" + DigestUtils.sha256Hex(configured);
     }
-    String directory =
-        System.getenv(VaultCredentialProviderConfig.CREDENTIALS_DIRECTORY_ENV);
-    if (directory != null && !directory.isEmpty()) {
-      return "systemd:" + directory + "/" + conf.get(
-          VaultCredentialProviderConfig.SYSTEMD_CREDENTIAL_NAME_KEY,
-          VaultCredentialProviderConfig.SYSTEMD_CREDENTIAL_NAME_DEFAULT);
+    File systemd =
+        VaultCredentialProviderConfig.systemdCredentialFile(conf);
+    if (systemd != null) {
+      return "systemd:" + systemd.getPath();
     }
     return "env";
   }
@@ -268,16 +295,16 @@ abstract class VaultClientIdentity {
       this.keytab = keytab;
     }
 
-    static OfKerberos ofCurrentUser(String baseUrl, String mountPath)
-        throws IOException {
-      return new OfKerberos(baseUrl, mountPath,
-          UserGroupInformation.getCurrentUser(), null, null);
+    static OfKerberos ofUser(String baseUrl, String mountPath,
+        UserGroupInformation ugi) {
+      return new OfKerberos(baseUrl, mountPath, ugi, null, null);
     }
 
     static OfKerberos ofKeytab(String baseUrl, String mountPath,
-        Configuration conf) {
+        Configuration conf) throws IOException {
       return new OfKerberos(baseUrl, mountPath, null,
-          conf.get(VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY),
+          serverPrincipal(conf.get(
+              VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY)),
           conf.get(VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY));
     }
 
