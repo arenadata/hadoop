@@ -206,7 +206,7 @@ public class TestVaultDelegationTokens {
         VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION);
     IOException e = UserGroupInformation.createRemoteUser("spark").doAs(
         (PrivilegedExceptionAction<IOException>) () -> intercept(
-            IOException.class, "Failed to create VaultHttpClient",
+            IOException.class, "Failed to resolve the Vault identity",
             () -> provider(containerConf)));
     assertEquals("User spark has no Vault delegation token for "
         + serverService(), e.getCause().getMessage());
@@ -220,7 +220,7 @@ public class TestVaultDelegationTokens {
         VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT);
     IOException e = UserGroupInformation.createRemoteUser("nobody").doAs(
         (PrivilegedExceptionAction<IOException>) () -> intercept(
-            IOException.class, "Failed to create VaultHttpClient",
+            IOException.class, "Failed to resolve the Vault identity",
             () -> provider(containerConf)));
     assertEquals("User nobody has neither Kerberos credentials nor a Vault "
         + "delegation token for " + serverService(),
@@ -251,7 +251,7 @@ public class TestVaultDelegationTokens {
     IOException e = container(creds).doAs(
         (PrivilegedExceptionAction<IOException>) () -> intercept(
             IOException.class, "Failed to create VaultHttpClient",
-            () -> provider(containerConf)));
+            () -> provider(containerConf).getCredentialEntry("db.password")));
     assertTrue(e.getCause().getMessage(), e.getCause().getMessage().contains(
         "Vault delegation token login to http://localhost:" + port
             + LOGIN_PATH + " failed with status 403"));
@@ -330,11 +330,33 @@ public class TestVaultDelegationTokens {
 
   @Test
   public void testKerberosClientIsReusedForOneIdentity() throws Exception {
-    provider(conf);
-    provider(conf);
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
 
-    assertEquals(requests.toString(), 1, requests.stream()
-        .filter(request -> request.startsWith("spnego-login")).count());
+    assertEquals(requests.toString(), 1, spnegoLoginCount());
+  }
+
+  @Test
+  public void testTheClientIsBuiltOnFirstUseNotOnConstruction()
+      throws Exception {
+    VaultCredentialProvider provider = provider(conf);
+
+    assertEquals(requests.toString(), 0, requests.size());
+
+    assertEquals(MockVault.SECRET_VALUE, new String(
+        provider.getCredentialEntry("db.password").getCredential()));
+    assertEquals(requests.toString(), 1, spnegoLoginCount());
+  }
+
+  @Test
+  public void testIdleClientIsDroppedFromTheCache() throws Exception {
+    conf.setLong(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 1);
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
+    Thread.sleep(20);
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
+
+    assertEquals(requests.toString(), 2, spnegoLoginCount());
   }
 
   @Test
@@ -476,6 +498,10 @@ public class TestVaultDelegationTokens {
     Token<?> token = issueToken(RENEWER_PRINCIPAL);
     creds.addToken(token.getService(), token);
     return creds;
+  }
+
+  private long spnegoLoginCount() {
+    return requests.stream().filter(r -> r.startsWith("spnego-login")).count();
   }
 
   private long loginCount() {

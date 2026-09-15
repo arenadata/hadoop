@@ -573,6 +573,18 @@
 </property>
 
 <property>
+  <name>hadoop.security.credential.vault.client.cache.idle.ms</name>
+  <value>3600000</value>
+  <description>
+    How long a cached VaultHttpClient is kept after its last use, in
+    milliseconds. A client holds an authenticated Vault token and, over
+    https, a truststore reload thread, so the clients of sessions that are
+    gone are released rather than held until the cache size forces them
+    out. The next read for that identity logs in again.
+  </description>
+</property>
+
+<property>
   <name>hadoop.security.credential.vault.cache.max.size</name>
   <value>4096</value>
   <description>

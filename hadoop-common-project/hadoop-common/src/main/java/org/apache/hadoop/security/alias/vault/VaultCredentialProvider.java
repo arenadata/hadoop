@@ -52,7 +52,8 @@ import org.slf4j.LoggerFactory;
  *       instances keyed by {@link VaultClientIdentity}, so that provider
  *       re-creation (e.g. repeated {@code Configuration.getPassword()}
  *       calls) reuses the already-authenticated client, and only for the
- *       identity that authenticated it.</li>
+ *       identity that authenticated it. A client is built on first use
+ *       and dropped once its identity has gone idle.</li>
  *   <li><b>Credential cache</b> — a Guava {@link Cache} with
  *       {@code expireAfterWrite} TTL, to avoid repeated HTTP round-trips
  *       for the same alias within the same JVM. Entries belong to the
@@ -86,7 +87,8 @@ public class VaultCredentialProvider extends CredentialProvider
 
   private final URI uri;
   private final VaultConnectionInfo connInfo;
-  private final VaultHttpClient httpClient;
+  /** Set by the test constructors only; otherwise the client cache. */
+  private final VaultHttpClient suppliedClient;
   private final boolean cacheEnabled;
   private final Configuration conf;
   private final VaultClientIdentity identity;
@@ -115,17 +117,10 @@ public class VaultCredentialProvider extends CredentialProvider
     try {
       this.identity = VaultClientIdentity.of(conf, connInfo);
     } catch (IOException e) {
-      throw new IOException("Failed to create VaultHttpClient for "
+      throw new IOException("Failed to resolve the Vault identity for "
           + connInfo.getBaseUrl(), e);
     }
-    try {
-      this.httpClient = clientCache.get(identity, () ->
-          new VaultHttpClient(conf, connInfo,
-              identity.createAuthMethod(conf, connInfo)));
-    } catch (ExecutionException e) {
-      throw new IOException("Failed to create VaultHttpClient for "
-          + connInfo.getBaseUrl(), e.getCause());
-    }
+    this.suppliedClient = null;
 
     LOG.debug("Created VaultCredentialProvider for {}", uri);
   }
@@ -157,7 +152,7 @@ public class VaultCredentialProvider extends CredentialProvider
     this.uri = uri;
     this.conf = new Configuration(false);
     this.connInfo = connInfo;
-    this.httpClient = httpClient;
+    this.suppliedClient = httpClient;
     this.cacheEnabled = cacheEnabled;
     this.identity = identity;
     if (cacheEnabled && credentialCache == null) {
@@ -205,10 +200,30 @@ public class VaultCredentialProvider extends CredentialProvider
     }
     Token<?> token = new KerberosVaultAuth(conf, connInfo,
         VaultAuthRequests.mountPath(conf), ugi)
-        .getDelegationToken(httpClient, renewer);
+        .getDelegationToken(client(), renewer);
     LOG.info("Obtained Vault delegation token {} with renewer {}", token,
         renewer);
     return token;
+  }
+
+  /**
+   * The client authenticated for this provider's identity, built on first
+   * use. Providers are constructed under the global serviceLoader lock of
+   * CredentialProviderFactory, which the Kerberos and the Vault login must
+   * not hold.
+   */
+  private VaultHttpClient client() throws IOException {
+    if (suppliedClient != null) {
+      return suppliedClient;
+    }
+    try {
+      return clientCache.get(identity, () ->
+          new VaultHttpClient(conf, connInfo,
+              identity.createAuthMethod(conf, connInfo)));
+    } catch (ExecutionException e) {
+      throw new IOException("Failed to create VaultHttpClient for "
+          + connInfo.getBaseUrl(), e.getCause());
+    }
   }
 
   private static void initClientCache(Configuration conf) {
@@ -218,8 +233,12 @@ public class VaultCredentialProvider extends CredentialProvider
           int maxSize = conf.getInt(
               VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_KEY,
               VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_DEFAULT);
+          long idleMs = conf.getLong(
+              VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY,
+              VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_DEFAULT);
           clientCache = CacheBuilder.newBuilder()
               .maximumSize(maxSize)
+              .expireAfterAccess(idleMs, TimeUnit.MILLISECONDS)
               .removalListener(notification -> {
                 VaultHttpClient c =
                     (VaultHttpClient) notification.getValue();
@@ -267,7 +286,7 @@ public class VaultCredentialProvider extends CredentialProvider
       }
     }
 
-    String value = httpClient.readSecret(dataPath, connInfo.getSecretKey());
+    String value = client().readSecret(dataPath, connInfo.getSecretKey());
     if (value == null) {
       return null;
     }
@@ -281,7 +300,7 @@ public class VaultCredentialProvider extends CredentialProvider
   @Override
   public List<String> getAliases() throws IOException {
     String metadataPath = connInfo.buildMetadataPath();
-    return httpClient.listSecrets(metadataPath);
+    return client().listSecrets(metadataPath);
   }
 
   @Override
@@ -299,7 +318,7 @@ public class VaultCredentialProvider extends CredentialProvider
 
     String dataPath = connInfo.buildDataPath(name);
     String value = new String(credential);
-    httpClient.writeSecret(dataPath, connInfo.getSecretKey(), value);
+    client().writeSecret(dataPath, connInfo.getSecretKey(), value);
 
     invalidateForAllIdentities(dataPath);
     if (cacheEnabled) {
@@ -321,7 +340,7 @@ public class VaultCredentialProvider extends CredentialProvider
     }
 
     String metadataPath = connInfo.buildMetadataPath(name);
-    httpClient.deleteSecret(metadataPath);
+    client().deleteSecret(metadataPath);
 
     invalidateForAllIdentities(connInfo.buildDataPath(name));
   }

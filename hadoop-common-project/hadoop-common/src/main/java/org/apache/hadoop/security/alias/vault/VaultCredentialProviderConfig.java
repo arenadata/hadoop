@@ -112,6 +112,10 @@ public final class VaultCredentialProviderConfig {
       CONFIG_PREFIX + "client.cache.max.size";
   public static final int CLIENT_CACHE_MAX_SIZE_DEFAULT = 256;
 
+  public static final String CLIENT_CACHE_IDLE_MS_KEY =
+      CONFIG_PREFIX + "client.cache.idle.ms";
+  public static final long CLIENT_CACHE_IDLE_MS_DEFAULT = 3600000;
+
   public static final String CACHE_TTL_MS_KEY =
       CONFIG_PREFIX + "cache.ttl.ms";
   public static final long CACHE_TTL_MS_DEFAULT = 600000;
