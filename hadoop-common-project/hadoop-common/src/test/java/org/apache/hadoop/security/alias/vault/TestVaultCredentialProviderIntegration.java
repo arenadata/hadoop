@@ -76,7 +76,6 @@ public class TestVaultCredentialProviderIntegration {
     server = HttpServer.create(new InetSocketAddress(0), 0);
     port = server.getAddress().getPort();
 
-    // Handle all requests under /v1/secret/
     server.createContext("/v1/secret/", this::handleVaultRequest);
     server.start();
 
@@ -237,7 +236,6 @@ public class TestVaultCredentialProviderIntegration {
         return;
       }
 
-      // Strip /v1/secret/ prefix
       String subPath = path.substring("/v1/secret/".length());
 
       if (subPath.startsWith("data/")) {
@@ -264,7 +262,7 @@ public class TestVaultCredentialProviderIntegration {
     if ("GET".equals(method)) {
       String value = store.get(key);
       if (value == null) {
-        sendResponse(exchange, 404, "{\"errors\":[\"not found\"]}");
+        sendResponse(exchange, 404, "{\"errors\":[]}");
       } else {
         Map<String, Object> response = new HashMap<>();
         Map<String, Object> data = new HashMap<>();
@@ -279,9 +277,8 @@ public class TestVaultCredentialProviderIntegration {
           IOUtils.toByteArray(exchange.getRequestBody()),
               StandardCharsets.UTF_8);
       Map<String, Object> request = MAPPER.readValue(body, Map.class);
-      Map<String, String> data = (Map<String, String>) request.get("data");
-      String value = data.get("value");
-      store.put(key, value);
+      Map<String, Object> data = (Map<String, Object>) request.get("data");
+      store.put(key, String.valueOf(data.get("value")));
       sendResponse(exchange, 200, "{\"data\":{\"version\":1}}");
     } else {
       sendResponse(exchange, 405, "{\"errors\":[\"method not allowed\"]}");
@@ -332,7 +329,7 @@ public class TestVaultCredentialProviderIntegration {
           }
         }
         if (keys.isEmpty()) {
-          sendResponse(exchange, 404, "{\"errors\":[\"not found\"]}");
+          sendResponse(exchange, 404, "{\"errors\":[]}");
         } else {
           Map<String, Object> response = new HashMap<>();
           Map<String, Object> data = new HashMap<>();
@@ -341,7 +338,7 @@ public class TestVaultCredentialProviderIntegration {
           sendResponse(exchange, 200, MAPPER.writeValueAsString(response));
         }
       } else {
-        sendResponse(exchange, 404, "{\"errors\":[\"not found\"]}");
+        sendResponse(exchange, 404, "{\"errors\":[]}");
       }
     } else {
       sendResponse(exchange, 405, "{\"errors\":[\"method not allowed\"]}");

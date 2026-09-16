@@ -20,6 +20,7 @@ package org.apache.hadoop.security.alias.vault;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -65,8 +66,9 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Credential cache</b> — a Guava {@link Cache} with
  *       {@code expireAfterWrite} TTL, to avoid repeated HTTP round-trips
  *       for the same alias within the same JVM. Entries belong to the
- *       identity that read them; writes and deletes drop the alias for
- *       every identity.</li>
+ *       identity that read them; an alias found absent is remembered for
+ *       a shorter TTL; writes and deletes drop the alias for every
+ *       identity.</li>
  * </ul>
  *
  * {@link #flush()} is a no-op. Writes and deletes update the cache
@@ -93,6 +95,9 @@ public class VaultCredentialProvider extends CredentialProvider
    */
   private static volatile Cache<CredentialKey, String> credentialCache;
 
+  /** Aliases an identity found absent, held for the negative TTL. */
+  private static volatile Cache<CredentialKey, Boolean> missCache;
+
   /** Settings the JVM-wide caches were built with, by property. */
   private static final Map<String, Long> CACHE_SETTINGS =
       new ConcurrentHashMap<>();
@@ -112,7 +117,8 @@ public class VaultCredentialProvider extends CredentialProvider
   private final VaultHttpClient suppliedClient;
   private final boolean cacheEnabled;
   private final Configuration conf;
-  private final VaultClientIdentity identity;
+  /** Resolved on first use: only then are the caller's credentials needed. */
+  private volatile VaultClientIdentity identity;
 
   /**
    * Create a Vault credential provider.
@@ -135,13 +141,6 @@ public class VaultCredentialProvider extends CredentialProvider
       initCredentialCache(conf);
     }
     warnOnIgnoredCacheSettings(conf);
-
-    try {
-      this.identity = VaultClientIdentity.of(conf, connInfo);
-    } catch (IOException e) {
-      throw new IOException("Failed to resolve the Vault identity for "
-          + connInfo.getBaseUrl(), e);
-    }
     this.suppliedClient = null;
 
     LOG.debug("Created VaultCredentialProvider for {}", uri);
@@ -166,7 +165,8 @@ public class VaultCredentialProvider extends CredentialProvider
   }
 
   /**
-   * Package-private constructor for testing a given identity.
+   * Package-private constructor for testing a given identity. The
+   * negative cache shares the TTL of the credential cache.
    */
   VaultCredentialProvider(URI uri, VaultConnectionInfo connInfo,
       VaultHttpClient httpClient, boolean cacheEnabled, long cacheTtlMs,
@@ -178,14 +178,8 @@ public class VaultCredentialProvider extends CredentialProvider
     this.cacheEnabled = cacheEnabled;
     this.identity = identity;
     if (cacheEnabled && credentialCache == null) {
-      recordCacheSetting(
-          VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, cacheTtlMs);
-      recordCacheSetting(VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY,
+      buildCredentialCaches(cacheTtlMs, cacheTtlMs,
           VaultCredentialProviderConfig.CACHE_MAX_SIZE_DEFAULT);
-      credentialCache = CacheBuilder.newBuilder()
-          .expireAfterWrite(cacheTtlMs, TimeUnit.MILLISECONDS)
-          .maximumSize(VaultCredentialProviderConfig.CACHE_MAX_SIZE_DEFAULT)
-          .build();
     }
   }
 
@@ -203,42 +197,76 @@ public class VaultCredentialProvider extends CredentialProvider
   }
 
   /**
-   * Obtain a delegation token owned by the current user, who must hold
-   * Kerberos credentials of their own. Returns null when this provider
-   * does not use Kerberos auth, when the current user is a proxy user or
-   * when they have no Kerberos credentials: tokens are never issued in the
-   * name of the dedicated keytab principal.
+   * Obtain a delegation token owned by the current user, who must hold a
+   * Kerberos login of their own. Returns null when this provider uses
+   * token auth, when delegation tokens are disabled, when the current
+   * user is a proxy user or when they have no Kerberos login: tokens are
+   * never issued in the name of the dedicated keytab principal.
    */
   @Override
   public Token<?> getDelegationToken(String renewer) throws IOException {
-    if (!VaultCredentialProviderConfig.AUTH_METHOD_KERBEROS
+    String service = connInfo.getServerService();
+    if (!conf.getBoolean(
+        VaultCredentialProviderConfig.DELEGATION_TOKEN_ENABLED_KEY,
+        VaultCredentialProviderConfig.DELEGATION_TOKEN_ENABLED_DEFAULT)) {
+      LOG.debug("Not issuing a Vault delegation token for {}: disabled",
+          service);
+      return null;
+    }
+    if (VaultCredentialProviderConfig.AUTH_METHOD_TOKEN
         .equalsIgnoreCase(VaultCredentialProviderConfig.authMethod(conf))) {
       LOG.debug("Not issuing a Vault delegation token for {}: auth method is "
-          + "not kerberos", connInfo.getServerService());
+          + "token", service);
       return null;
     }
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
-    if (ugi.getRealUser() != null || !ugi.hasKerberosCredentials()) {
-      LOG.debug("Not issuing a Vault delegation token for {}: user {} is a "
-          + "proxy user or has no Kerberos credentials",
-          connInfo.getServerService(), ugi.getUserName());
+    if (ugi.getRealUser() != null) {
+      LOG.info("Not issuing a Vault delegation token for {} to {}: a proxy "
+          + "user cannot own one", service, ugi.getUserName());
       return null;
     }
-    // The request carries its own SPNEGO credentials; a Vault login of
-    // this provider's identity would be an unrelated one.
+    if (!ugi.shouldRelogin()) {
+      LOG.info("Not issuing a Vault delegation token for {} to {}: the user "
+          + "has no Kerberos login", service, ugi.getUserName());
+      return null;
+    }
+    String recordedRenewer = conf.getBoolean(
+        VaultCredentialProviderConfig.DELEGATION_TOKEN_RENEWABLE_KEY,
+        VaultCredentialProviderConfig.DELEGATION_TOKEN_RENEWABLE_DEFAULT)
+        ? renewer : null;
+    // The request authenticates itself over SPNEGO.
     Token<?> token;
     VaultHttpClient client =
         VaultHttpClient.unauthenticated(conf, connInfo);
     try {
       token = new KerberosVaultAuth(conf, connInfo,
           VaultAuthRequests.mountPath(conf), ugi)
-          .getDelegationToken(client, renewer);
+          .getDelegationToken(client, recordedRenewer);
     } finally {
       client.close();
     }
     LOG.info("Obtained Vault delegation token {} with renewer {}", token,
-        renewer);
+        recordedRenewer);
     return token;
+  }
+
+  private VaultClientIdentity identity() throws IOException {
+    VaultClientIdentity resolved = identity;
+    if (resolved == null) {
+      synchronized (this) {
+        resolved = identity;
+        if (resolved == null) {
+          try {
+            resolved = VaultClientIdentity.of(conf, connInfo);
+          } catch (IOException e) {
+            throw new IOException("Failed to resolve the Vault identity for "
+                + connInfo.getBaseUrl(), e);
+          }
+          identity = resolved;
+        }
+      }
+    }
+    return resolved;
   }
 
   /**
@@ -251,21 +279,22 @@ public class VaultCredentialProvider extends CredentialProvider
     if (suppliedClient != null) {
       return suppliedClient;
     }
+    VaultClientIdentity self = identity();
     Set<VaultClientIdentity> building = BUILDING.get();
-    if (!building.add(identity)) {
-      throw new IOException("Building the Vault client for " + identity
+    if (!building.add(self)) {
+      throw new IOException("Building the Vault client for " + self
           + " needs a credential this same provider would serve");
     }
     try {
-      return clientCache.get(identity, () ->
+      return clientCache.get(self, () ->
           new VaultHttpClient(conf, connInfo,
-              identity.createAuthMethod(conf, connInfo)));
+              self.createAuthMethod(conf, connInfo)));
     } catch (ExecutionException | UncheckedExecutionException
         | ExecutionError e) {
       throw new IOException("Failed to create VaultHttpClient for "
           + connInfo.getBaseUrl(), e.getCause());
     } finally {
-      building.remove(identity);
+      building.remove(self);
       if (building.isEmpty()) {
         BUILDING.remove();
       }
@@ -280,7 +309,7 @@ public class VaultCredentialProvider extends CredentialProvider
           long maxSize = VaultCredentialProviderConfig.positiveNumber(conf,
               VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_KEY,
               VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_DEFAULT);
-          long idleMs = VaultCredentialProviderConfig.number(conf,
+          long idleMs = VaultCredentialProviderConfig.nonNegativeNumber(conf,
               VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY,
               VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_DEFAULT);
           recordCacheSetting(
@@ -314,20 +343,33 @@ public class VaultCredentialProvider extends CredentialProvider
           long ttlMs = VaultCredentialProviderConfig.positiveNumber(conf,
               VaultCredentialProviderConfig.CACHE_TTL_MS_KEY,
               VaultCredentialProviderConfig.CACHE_TTL_MS_DEFAULT);
+          long negativeTtlMs = VaultCredentialProviderConfig.nonNegativeNumber(
+              conf, VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_KEY,
+              VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_DEFAULT);
           long maxSize = VaultCredentialProviderConfig.positiveNumber(conf,
               VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY,
               VaultCredentialProviderConfig.CACHE_MAX_SIZE_DEFAULT);
-          recordCacheSetting(
-              VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, ttlMs);
-          recordCacheSetting(
-              VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY, maxSize);
-          credentialCache = CacheBuilder.newBuilder()
-              .expireAfterWrite(ttlMs, TimeUnit.MILLISECONDS)
-              .maximumSize(maxSize)
-              .build();
+          buildCredentialCaches(ttlMs, negativeTtlMs, maxSize);
         }
       }
     }
+  }
+
+  private static void buildCredentialCaches(long ttlMs, long negativeTtlMs,
+      long maxSize) {
+    recordCacheSetting(VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, ttlMs);
+    recordCacheSetting(VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_KEY,
+        negativeTtlMs);
+    recordCacheSetting(VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY,
+        maxSize);
+    missCache = negativeTtlMs > 0 ? CacheBuilder.newBuilder()
+        .expireAfterWrite(negativeTtlMs, TimeUnit.MILLISECONDS)
+        .maximumSize(maxSize)
+        .build() : null;
+    credentialCache = CacheBuilder.newBuilder()
+        .expireAfterWrite(ttlMs, TimeUnit.MILLISECONDS)
+        .maximumSize(maxSize)
+        .build();
   }
 
   private static void recordCacheSetting(String key, long value) {
@@ -350,6 +392,9 @@ public class VaultCredentialProvider extends CredentialProvider
       try {
         asked = VaultCredentialProviderConfig.number(conf, key, inForce);
       } catch (IOException e) {
+        if (WARNED_CACHE_SETTINGS.add(key)) {
+          LOG.warn("{} is ignored: {}", key, e.getMessage());
+        }
         return;
       }
       if (asked != inForce && WARNED_CACHE_SETTINGS.add(key)) {
@@ -361,21 +406,31 @@ public class VaultCredentialProvider extends CredentialProvider
 
   @Override
   public CredentialEntry getCredentialEntry(String alias) throws IOException {
-    if (alias == null || alias.isEmpty()) {
+    if (!VaultConnectionInfo.isValidAlias(alias)) {
       return null;
     }
     String dataPath = connInfo.buildDataPath(alias);
 
     if (cacheEnabled) {
-      String cached = credentialCache.getIfPresent(cacheKey(dataPath));
+      CredentialKey key = cacheKey(dataPath);
+      String cached = credentialCache.getIfPresent(key);
       if (cached != null) {
         LOG.debug("Credential cache hit for {}", alias);
         return newCredentialEntry(alias, cached.toCharArray());
+      }
+      Cache<CredentialKey, Boolean> misses = missCache;
+      if (misses != null && misses.getIfPresent(key) != null) {
+        LOG.debug("Credential cache hit for absent {}", alias);
+        return null;
       }
     }
 
     String value = readSecret(dataPath);
     if (value == null) {
+      Cache<CredentialKey, Boolean> misses = missCache;
+      if (cacheEnabled && misses != null) {
+        misses.put(cacheKey(dataPath), Boolean.TRUE);
+      }
       return null;
     }
 
@@ -387,16 +442,28 @@ public class VaultCredentialProvider extends CredentialProvider
 
   @Override
   public List<String> getAliases() throws IOException {
-    String metadataPath = connInfo.buildMetadataPath();
-    return client().listSecrets(metadataPath);
+    List<String> aliases = new ArrayList<>();
+    collectAliases(connInfo.buildMetadataPath(), "", aliases);
+    return aliases;
+  }
+
+  /** A KV v2 list is one level deep; aliases may hold slashes. */
+  private void collectAliases(String metadataPath, String prefix,
+      List<String> aliases) throws IOException {
+    for (String key : client().listSecrets(metadataPath)) {
+      if (key.endsWith("/")) {
+        String dir = key.substring(0, key.length() - 1);
+        collectAliases(metadataPath + "/" + dir, prefix + key, aliases);
+      } else {
+        aliases.add(prefix + key);
+      }
+    }
   }
 
   @Override
   public CredentialEntry createCredentialEntry(String name, char[] credential)
       throws IOException {
-    if (name == null || name.isEmpty()) {
-      throw new IOException("Credential alias must not be null or empty");
-    }
+    VaultConnectionInfo.checkAlias(name);
     String dataPath = connInfo.buildDataPath(name);
     VaultHttpClient.Secret current = client().readSecretFields(dataPath);
     if (current != null
@@ -407,7 +474,7 @@ public class VaultCredentialProvider extends CredentialProvider
     }
 
     String value = new String(credential);
-    Map<String, String> fields = current == null
+    Map<String, Object> fields = current == null
         ? new HashMap<>() : new HashMap<>(current.getFields());
     fields.put(connInfo.getSecretKey(), value);
     try {
@@ -424,9 +491,7 @@ public class VaultCredentialProvider extends CredentialProvider
 
   @Override
   public void deleteCredentialEntry(String name) throws IOException {
-    if (name == null || name.isEmpty()) {
-      throw new IOException("Credential alias must not be null or empty");
-    }
+    VaultConnectionInfo.checkAlias(name);
     String dataPath = connInfo.buildDataPath(name);
     VaultHttpClient.Secret current = client().readSecretFields(dataPath);
     if (current == null
@@ -436,7 +501,7 @@ public class VaultCredentialProvider extends CredentialProvider
           + " does not exist in " + this);
     }
 
-    Map<String, String> fields = new HashMap<>(current.getFields());
+    Map<String, Object> fields = new HashMap<>(current.getFields());
     fields.remove(connInfo.getSecretKey());
     try {
       if (fields.isEmpty()) {
@@ -449,11 +514,7 @@ public class VaultCredentialProvider extends CredentialProvider
     }
   }
 
-  /**
-   * A read straight from Vault. The write path checks what is there now,
-   * which the cache cannot answer for and must not learn: a value read to
-   * decide a write outlives the write when it fails.
-   */
+  /** Read the alias from Vault, bypassing the credential cache. */
   private String readSecret(String dataPath) throws IOException {
     return client().readSecret(dataPath, connInfo.getSecretKey());
   }
@@ -473,8 +534,8 @@ public class VaultCredentialProvider extends CredentialProvider
     return uri.toString();
   }
 
-  private CredentialKey cacheKey(String path) {
-    return new CredentialKey(identity, connInfo.getBaseUrl(), path,
+  private CredentialKey cacheKey(String path) throws IOException {
+    return new CredentialKey(identity(), connInfo.getBaseUrl(), path,
         connInfo.getSecretKey());
   }
 
@@ -488,6 +549,11 @@ public class VaultCredentialProvider extends CredentialProvider
     Cache<CredentialKey, String> cache = credentialCache;
     if (cache != null) {
       cache.asMap().keySet().removeIf(
+          key -> key.isAlias(connInfo.getBaseUrl(), path));
+    }
+    Cache<CredentialKey, Boolean> misses = missCache;
+    if (misses != null) {
+      misses.asMap().keySet().removeIf(
           key -> key.isAlias(connInfo.getBaseUrl(), path));
     }
   }
@@ -542,6 +608,10 @@ public class VaultCredentialProvider extends CredentialProvider
     if (credentialCache != null) {
       credentialCache.invalidateAll();
       credentialCache = null;
+    }
+    if (missCache != null) {
+      missCache.invalidateAll();
+      missCache = null;
     }
     CACHE_SETTINGS.clear();
     WARNED_CACHE_SETTINGS.clear();

@@ -142,6 +142,7 @@ public class TestVaultDelegationTokens {
     if (server != null) {
       server.stop(0);
     }
+    UserGroupInformation.setLoginUser(null);
     VaultCredentialProvider.clearCaches();
   }
 
@@ -175,21 +176,33 @@ public class TestVaultDelegationTokens {
   }
 
   @Test
-  public void testIssuerRequiresOwnKerberosCredentials() throws Exception {
+  public void testIssuerRequiresOwnKerberosLogin() throws Exception {
+    GenericTestUtils.LogCapturer logs = GenericTestUtils.LogCapturer
+        .captureLogs(LoggerFactory.getLogger(VaultCredentialProvider.class));
     VaultCredentialProvider provider = provider(conf);
     Credentials creds = new Credentials();
-
-    assertNull(provider.getDelegationToken(RENEWER_PRINCIPAL));
-    assertEquals(0,
-        provider.addDelegationTokens(RENEWER_PRINCIPAL, creds).length);
+    UserGroupInformation nobody = UserGroupInformation.createRemoteUser("nobody");
+    UserGroupInformation remote = UserGroupInformation.createRemoteUser("alice");
+    remote.setAuthenticationMethod(
+        UserGroupInformation.AuthenticationMethod.KERBEROS);
     UserGroupInformation proxy =
         UserGroupInformation.createProxyUser("bob", clientUgi);
-    assertNull(proxy.doAs((PrivilegedExceptionAction<Token<?>>) () ->
-        provider.getDelegationToken(RENEWER_PRINCIPAL)));
+
+    for (UserGroupInformation ugi : Arrays.asList(nobody, remote, proxy)) {
+      assertNull(ugi.getUserName(), ugi.doAs(
+          (PrivilegedExceptionAction<Token<?>>) () ->
+              provider.getDelegationToken(RENEWER_PRINCIPAL)));
+    }
+    assertEquals(0, nobody.doAs((PrivilegedExceptionAction<Token<?>[]>) () ->
+        provider.addDelegationTokens(RENEWER_PRINCIPAL, creds)).length);
 
     assertEquals(0, creds.numberOfTokens());
     assertFalse(requests.toString(),
         requests.stream().anyMatch(r -> r.startsWith("issue ")));
+    assertTrue(logs.getOutput(),
+        logs.getOutput().contains("a proxy user cannot own one"));
+    assertTrue(logs.getOutput(),
+        logs.getOutput().contains("the user has no Kerberos login"));
   }
 
   @Test
@@ -212,7 +225,7 @@ public class TestVaultDelegationTokens {
     IOException e = UserGroupInformation.createRemoteUser("spark").doAs(
         (PrivilegedExceptionAction<IOException>) () -> intercept(
             IOException.class, "Failed to resolve the Vault identity",
-            () -> provider(containerConf)));
+            () -> provider(containerConf).getCredentialEntry("db.password")));
     assertEquals("User spark has no Vault delegation token for "
         + serverService(), e.getCause().getMessage());
   }
@@ -220,16 +233,122 @@ public class TestVaultDelegationTokens {
   @Test
   public void testKerberosAuthWithoutCredentialsOrTokenFails()
       throws Exception {
+    UserGroupInformation.setLoginUser(
+        UserGroupInformation.createRemoteUser("os-user"));
     Configuration containerConf = new Configuration(conf);
     containerConf.set(VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
         VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT);
     IOException e = UserGroupInformation.createRemoteUser("nobody").doAs(
         (PrivilegedExceptionAction<IOException>) () -> intercept(
             IOException.class, "Failed to resolve the Vault identity",
-            () -> provider(containerConf)));
+            () -> provider(containerConf).getCredentialEntry("db.password")));
     assertEquals("User nobody has neither Kerberos credentials nor a Vault "
-        + "delegation token for " + serverService(),
+        + "delegation token for " + serverService()
+        + ", and neither has the login user os-user",
         e.getCause().getMessage());
+  }
+
+  @Test
+  public void testCallerWithoutCredentialsUsesTheLoginUser()
+      throws Exception {
+    UserGroupInformation.setLoginUser(clientUgi);
+    Configuration currentConf = new Configuration(conf);
+    currentConf.set(VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
+        VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT);
+    UserGroupInformation remote = UserGroupInformation.createRemoteUser("alice");
+    remote.setAuthenticationMethod(
+        UserGroupInformation.AuthenticationMethod.KERBEROS);
+
+    assertEquals(MockVault.SECRET_VALUE,
+        readAs(UserGroupInformation.createRemoteUser("nobody"), currentConf));
+    assertEquals(MockVault.SECRET_VALUE, readAs(remote, currentConf));
+
+    assertEquals(requests.toString(), 1, spnegoLoginCount());
+    assertTrue(requests.toString(), requests.contains(
+        "spnego-login " + KRB.principal(CLIENT_PRINCIPAL)));
+  }
+
+  @Test
+  public void testDelegationAuthMethodIssuesTokens() throws Exception {
+    Configuration delegationConf = new Configuration(conf);
+    delegationConf.set(VaultCredentialProviderConfig.AUTH_METHOD_KEY,
+        VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION);
+    VaultCredentialProvider provider = provider(delegationConf);
+
+    Token<?> token = asClient(
+        () -> provider.getDelegationToken(RENEWER_PRINCIPAL));
+
+    assertEquals(VaultDelegationTokenIdentifier.KIND_NAME, token.getKind());
+  }
+
+  @Test
+  public void testNoTokenWhenDelegationTokensAreDisabled() throws Exception {
+    Configuration disabled = new Configuration(conf);
+    disabled.setBoolean(
+        VaultCredentialProviderConfig.DELEGATION_TOKEN_ENABLED_KEY, false);
+    VaultCredentialProvider provider = provider(disabled);
+
+    assertEquals(0, asClient(() -> provider.addDelegationTokens(
+        RENEWER_PRINCIPAL, new Credentials())).length);
+    assertFalse(requests.toString(),
+        requests.stream().anyMatch(r -> r.startsWith("issue ")));
+  }
+
+  @Test
+  public void testAnUnrenewableTokenHasNoRenewer() throws Exception {
+    Configuration unrenewable = new Configuration(conf);
+    unrenewable.setBoolean(
+        VaultCredentialProviderConfig.DELEGATION_TOKEN_RENEWABLE_KEY, false);
+    VaultCredentialProvider provider = provider(unrenewable);
+
+    Token<?> token = asClient(
+        () -> provider.getDelegationToken(RENEWER_PRINCIPAL));
+
+    assertEquals("", renewerOf(token));
+    assertTrue(requests.toString(), requests.contains(
+        "issue " + KRB.principal(CLIENT_PRINCIPAL) + " renewer="));
+  }
+
+  @Test
+  public void testTokenOfAProxyLoginUserIsUsed() throws Exception {
+    UserGroupInformation proxy = UserGroupInformation.createProxyUser("bob",
+        UserGroupInformation.createRemoteUser("os-user"));
+    proxy.addCredentials(credentialsWithToken());
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(proxy, containerConf()));
+    assertTrue(requests.toString(), requests.contains("token-login 1"));
+  }
+
+  @Test
+  public void testRenewerRefusesAServerThisHostIsNotConfiguredFor()
+      throws Exception {
+    Token<?> token = issueToken(RENEWER_PRINCIPAL);
+    UserGroupInformation renewer = KRB.loginFromKeytab(RENEWER_PRINCIPAL);
+    Configuration other = rmConf();
+    other.set(VaultCredentialProviderConfig.DELEGATION_TOKEN_SERVERS_KEY,
+        "https@vault.example.com:8200");
+
+    renewer.doAs((PrivilegedExceptionAction<Void>) () -> {
+      intercept(IOException.class, "is not one this host is configured for",
+          () -> token.renew(other));
+      return null;
+    });
+    assertFalse(requests.toString(),
+        requests.stream().anyMatch(r -> r.startsWith("renew ")));
+
+    Configuration listed = rmConf();
+    listed.set(VaultCredentialProviderConfig.DELEGATION_TOKEN_SERVERS_KEY,
+        "https@vault.example.com:8200, http@localhost:" + port);
+    long expiry = renewer.doAs(
+        (PrivilegedExceptionAction<Long>) () -> token.renew(listed));
+    assertEquals(expiries.get(1).longValue(), expiry);
+
+    Configuration fromProviderPath = rmConf();
+    fromProviderPath.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "jceks://file/tmp/other.jceks," + providerUri);
+    expiry = renewer.doAs(
+        (PrivilegedExceptionAction<Long>) () -> token.renew(fromProviderPath));
+    assertEquals(expiries.get(1).longValue(), expiry);
   }
 
   @Test

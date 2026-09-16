@@ -20,6 +20,7 @@ package org.apache.hadoop.security.alias.vault;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -67,7 +68,6 @@ public class VaultConnectionInfo {
 
     if (authority.contains("@")) {
       // Format: vault://protocol@host:port/...
-      // Use ProviderUtils.unnestUri to extract protocol from authority
       Path unnested = ProviderUtils.unnestUri(uri);
       URI innerUri = unnested.toUri();
 
@@ -96,7 +96,6 @@ public class VaultConnectionInfo {
       throw new IOException("Invalid Vault URI: missing host in " + uri);
     }
 
-    // Parse path
     String path = uri.getPath();
     if (path == null || path.isEmpty()) {
       throw new IOException("Invalid Vault URI: missing path in " + uri);
@@ -172,23 +171,65 @@ public class VaultConnectionInfo {
   }
 
   private static String parseHost(String hostPort) {
-    int colonIdx = hostPort.indexOf(':');
+    int colonIdx = portSeparator(hostPort);
     if (colonIdx >= 0) {
       return hostPort.substring(0, colonIdx);
     }
     return hostPort;
   }
 
-  private static int parsePort(String hostPort) {
-    int colonIdx = hostPort.indexOf(':');
-    if (colonIdx >= 0) {
-      try {
-        return Integer.parseInt(hostPort.substring(colonIdx + 1));
-      } catch (NumberFormatException e) {
-        return DEFAULT_PORT;
+  private static int parsePort(String hostPort) throws IOException {
+    int colonIdx = portSeparator(hostPort);
+    if (colonIdx < 0) {
+      return DEFAULT_PORT;
+    }
+    String port = hostPort.substring(colonIdx + 1);
+    try {
+      return Integer.parseInt(port);
+    } catch (NumberFormatException e) {
+      throw new IOException("Invalid Vault port: " + port);
+    }
+  }
+
+  /** Index of the colon before the port, -1 if none; IPv6 literals are bracketed. */
+  private static int portSeparator(String hostPort) {
+    int from = hostPort.startsWith("[") ? hostPort.indexOf(']') : 0;
+    return hostPort.indexOf(':', from < 0 ? 0 : from);
+  }
+
+  /**
+   * Reject an alias that cannot name one secret under the base path: empty,
+   * with control characters, or with an empty, {@code .} or {@code ..} path
+   * segment.
+   *
+   * @param alias the credential alias
+   * @throws IOException if the alias is not a Vault path
+   */
+  static void checkAlias(String alias) throws IOException {
+    if (alias == null || alias.isEmpty()) {
+      throw new IOException("Credential alias must not be null or empty");
+    }
+    for (int i = 0; i < alias.length(); i++) {
+      char c = alias.charAt(i);
+      if (c < ' ' || c == 0x7f) {
+        throw new IOException("Credential alias contains control characters");
       }
     }
-    return DEFAULT_PORT;
+    for (String segment : alias.split("/", -1)) {
+      if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+        throw new IOException("Credential alias '" + alias
+            + "' is not a valid Vault path");
+      }
+    }
+  }
+
+  static boolean isValidAlias(String alias) {
+    try {
+      checkAlias(alias);
+      return true;
+    } catch (IOException e) {
+      return false;
+    }
   }
 
   /**
@@ -251,14 +292,41 @@ public class VaultConnectionInfo {
   }
 
   /**
-   * Build the URL of a Vault API path.
+   * Build the URL of a Vault API path, each segment percent-encoded.
    * Format: {protocol}://{host}:{port}/v1/{path}
    *
    * @param path the API path relative to {@code /v1/}
    * @return the full URL
    */
   public String getApiUrl(String path) {
-    return getBaseUrl() + "/v1/" + path;
+    return getBaseUrl() + "/v1/" + encodePath(path);
+  }
+
+  private static final char[] HEX = "0123456789ABCDEF".toCharArray();
+
+  static String encodePath(String path) {
+    StringBuilder sb = new StringBuilder(path.length());
+    for (String segment : path.split("/", -1)) {
+      if (sb.length() > 0) {
+        sb.append('/');
+      }
+      encodeSegment(segment, sb);
+    }
+    return sb.toString();
+  }
+
+  /** Percent-encode everything but the unreserved characters of RFC 3986. */
+  private static void encodeSegment(String segment, StringBuilder sb) {
+    for (byte b : segment.getBytes(StandardCharsets.UTF_8)) {
+      int c = b & 0xff;
+      if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+          || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_'
+          || c == '~') {
+        sb.append((char) c);
+      } else {
+        sb.append('%').append(HEX[c >> 4]).append(HEX[c & 0xf]);
+      }
+    }
   }
 
   /**

@@ -76,7 +76,7 @@ final class VaultAuthRequests {
   }
 
   static String mountPath(Configuration conf) throws IOException {
-    return mountPath(conf.get(
+    return mountPath(conf.getTrimmed(
         VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_KEY,
         VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT));
   }
@@ -87,7 +87,7 @@ final class VaultAuthRequests {
    */
   static String resolveServicePrincipal(Configuration conf,
       String vaultHost) throws IOException {
-    String configured = conf.get(
+    String configured = conf.getTrimmed(
         VaultCredentialProviderConfig.KERBEROS_SERVICE_PRINCIPAL_KEY);
     if (configured != null && !configured.isEmpty()) {
       return SecurityUtil.getServerPrincipal(configured, vaultHost);
@@ -98,27 +98,31 @@ final class VaultAuthRequests {
 
   /**
    * POST as {@code ugi} with a fresh SPNEGO token, relogging in from the
-   * keytab first when the TGT is close to expiry.
+   * keytab first when the TGT is close to expiry. Transient failures are
+   * retried with a new token each time.
    *
    * @return the response body
    */
   static String postWithSpnego(VaultHttpClient client,
       UserGroupInformation ugi, String servicePrincipal, String url,
       String jsonBody, String action) throws IOException {
-    ugi.checkTGTAndReloginFromKeytab();
-    try {
-      return ugi.doAs((PrivilegedExceptionAction<String>) () -> post(client,
-          url, "Negotiate " + spnegoToken(servicePrincipal), jsonBody,
-          action));
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new IOException(action + " interrupted", e);
-    }
+    return client.retrying(action, () -> {
+      ugi.checkTGTAndReloginFromKeytab();
+      try {
+        return ugi.doAs((PrivilegedExceptionAction<String>) () -> post(
+            client, url, "Negotiate " + spnegoToken(servicePrincipal),
+            jsonBody, action));
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IOException(action + " interrupted", e);
+      }
+    });
   }
 
   /**
    * POST a JSON body and return the response body; a 204 yields an empty
-   * string. Any other status becomes an IOException naming the URL.
+   * string. Any other status is a {@link VaultHttpClient.RequestFailedException}
+   * naming the URL.
    */
   static String post(VaultHttpClient client, String url,
       String authorization, String jsonBody, String action)
@@ -142,13 +146,11 @@ final class VaultAuthRequests {
       }
     }
     if (statusCode == HttpURLConnection.HTTP_NO_CONTENT) {
-      conn.disconnect();
       return "";
     }
-    String errorBody = VaultHttpClient.readErrorBody(conn);
-    conn.disconnect();
-    throw new IOException(action + " to " + url + " failed with status "
-        + statusCode + ": " + errorBody);
+    throw new VaultHttpClient.RequestFailedException(statusCode,
+        action + " to " + url + " failed with status " + statusCode + ": "
+            + VaultHttpClient.readErrorBody(conn));
   }
 
   /**

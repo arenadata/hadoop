@@ -177,6 +177,41 @@ public class TestVaultCredentialProviderConfig {
     assertEquals("s.config-token", token);
   }
 
+  @Test
+  public void testNonNegativeNumberRejectsNegative() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.setLong(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, -1);
+
+    intercept(IOException.class, "must not be negative", () ->
+        VaultCredentialProviderConfig.nonNegativeNumber(conf,
+            VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 1L));
+    assertEquals(0, VaultCredentialProviderConfig.nonNegativeNumber(
+        new Configuration(false),
+        VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 0L));
+  }
+
+  @Test
+  public void testTokenIsTrimmed() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.TOKEN_KEY, "\n    hvs.spaced\n  ");
+
+    assertEquals("hvs.spaced",
+        VaultCredentialProviderConfig.resolveToken(conf));
+  }
+
+  @Test
+  public void testTokenWithControlCharactersIsRejectedWithoutQuotingIt()
+      throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.TOKEN_KEY, "hvs.first\nhvs.second");
+
+    IOException e = intercept(IOException.class,
+        "whitespace or control characters",
+        () -> VaultCredentialProviderConfig.resolveToken(conf));
+
+    assertFalse(e.getMessage(), e.getMessage().contains("hvs."));
+  }
+
   private static void writeFile(File file, String content)
       throws IOException {
     try (FileOutputStream fos = new FileOutputStream(file)) {

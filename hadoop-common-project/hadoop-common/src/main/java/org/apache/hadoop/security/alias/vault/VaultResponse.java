@@ -48,10 +48,11 @@ final class VaultResponse {
     KvReadData data;
   }
 
+  /** The fields hold whatever JSON the secret was written with. */
   @JsonIgnoreProperties(ignoreUnknown = true)
   static class KvReadData {
     @JsonProperty("data")
-    Map<String, String> data;
+    Map<String, Object> data;
     @JsonProperty("metadata")
     KvReadMetadata metadata;
   }

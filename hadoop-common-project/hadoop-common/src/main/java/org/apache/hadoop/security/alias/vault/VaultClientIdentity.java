@@ -19,11 +19,14 @@
 package org.apache.hadoop.security.alias.vault;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.Objects;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.net.DNS;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
@@ -40,9 +43,9 @@ import org.slf4j.LoggerFactory;
  * user name are different identities, so neither can use the other's
  * client or read its cached secrets.
  *
- * <p>Choosing an identity runs on every provider creation and must not
- * contact the KDC or Vault; {@link #createAuthMethod} runs only when no
- * client for the identity is cached yet.
+ * <p>Choosing an identity must not contact the KDC or Vault;
+ * {@link #createAuthMethod} runs only when no client for the identity is
+ * cached yet.
  */
 @InterfaceAudience.Private
 abstract class VaultClientIdentity {
@@ -63,10 +66,6 @@ abstract class VaultClientIdentity {
 
   private final String baseUrl;
   private final String settings;
-
-  private VaultClientIdentity(String baseUrl) {
-    this(baseUrl, "");
-  }
 
   private VaultClientIdentity(String baseUrl, String settings) {
     this.baseUrl = baseUrl;
@@ -105,16 +104,20 @@ abstract class VaultClientIdentity {
 
   /**
    * The identity the configuration and the caller's credentials select.
-   * With {@code kerberos}, a process without Kerberos credentials that
-   * holds a Vault delegation token for this server (a YARN container)
-   * logs in with the token instead of SPNEGO. Credentials are those of
-   * the current user, or of the real user behind a proxy user.
+   * The caller is the current user, or the real user behind a proxy user.
+   * With {@code kerberos} and {@code ugi.mode=current}, a caller holding a
+   * Kerberos login authenticates with it; a caller holding a Vault
+   * delegation token for this server (a YARN container) logs in with the
+   * token; any other caller, such as a remote user inside a server,
+   * authenticates as the process login user. With {@code ugi.mode=dedicated}
+   * the configured keytab authenticates, except for a caller that holds a
+   * token and no Kerberos login.
    *
    * @param conf the configuration
    * @param connInfo the Vault server
    * @return the identity
-   * @throws IOException if the auth method is unsupported, or the caller
-   *     has no credentials it could authenticate with
+   * @throws IOException if the auth method is unsupported, or nobody on
+   *     the calling thread has credentials to authenticate with
    */
   static VaultClientIdentity of(Configuration conf,
       VaultConnectionInfo connInfo) throws IOException {
@@ -135,109 +138,100 @@ abstract class VaultClientIdentity {
           + VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION);
     }
     String mountPath = VaultAuthRequests.mountPath(conf);
-    UserGroupInformation ugi = VaultDelegationTokens.actualUser();
+    String server = connInfo.getServerService();
+    UserGroupInformation caller = UserGroupInformation.getCurrentUser();
+    UserGroupInformation tokenHolder =
+        VaultDelegationTokens.tokenHolder(caller, connInfo, mountPath);
     if (delegation) {
-      if (!hasToken(ugi, connInfo, mountPath)) {
-        throw new IOException("User " + ugi.getUserName()
-            + " has no Vault delegation token for "
-            + connInfo.getServerService());
+      if (tokenHolder == null) {
+        throw new IOException("User " + caller.getUserName()
+            + " has no Vault delegation token for " + server);
       }
-      return new OfDelegationToken(baseUrl, settings, mountPath, ugi);
+      return new OfDelegationToken(baseUrl, settings, mountPath, tokenHolder);
     }
-    if (!ugi.hasKerberosCredentials()) {
-      if (hasToken(ugi, connInfo, mountPath)) {
-        LOG.debug("User {} has no Kerberos credentials, using the Vault "
-            + "delegation token for {}", ugi.getUserName(),
-            connInfo.getServerService());
-        return new OfDelegationToken(baseUrl, settings, mountPath, ugi);
-      }
-      if (isCurrentUgiMode(conf)) {
-        throw new IOException("User " + ugi.getUserName()
-            + " has neither Kerberos credentials nor a Vault delegation "
-            + "token for " + connInfo.getServerService());
-      }
+    UserGroupInformation login = VaultDelegationTokens.kerberosLogin(caller);
+    if (!isCurrentUgiMode(conf)) {
+      return login == null && tokenHolder != null
+          ? new OfDelegationToken(baseUrl, settings, mountPath, tokenHolder)
+          : OfKerberos.ofKeytab(baseUrl, settings, mountPath, conf);
     }
-    return isCurrentUgiMode(conf)
-        ? OfKerberos.ofUser(baseUrl, settings, mountPath, ugi)
-        : OfKerberos.ofKeytab(baseUrl, settings, mountPath, conf);
+    if (login != null) {
+      return OfKerberos.ofUser(baseUrl, settings, mountPath, login);
+    }
+    if (tokenHolder != null) {
+      LOG.debug("User {} has no Kerberos login, using the Vault delegation "
+          + "token for {}", caller.getUserName(), server);
+      return new OfDelegationToken(baseUrl, settings, mountPath, tokenHolder);
+    }
+    UserGroupInformation loginUser = UserGroupInformation.getLoginUser();
+    if (loginUser.shouldRelogin()) {
+      LOG.debug("User {} has neither a Kerberos login nor a Vault delegation "
+          + "token for {}, using the login user {}", caller.getUserName(),
+          server, loginUser.getUserName());
+      return OfKerberos.ofUser(baseUrl, settings, mountPath, loginUser);
+    }
+    throw new IOException("User " + caller.getUserName()
+        + " has neither Kerberos credentials nor a Vault delegation token for "
+        + server + ", and neither has the login user "
+        + loginUser.getUserName());
   }
 
   /**
-   * The UGI a Kerberos login authenticates as: the calling user, or a
-   * login from the configured principal and keytab. A proxy user has no
-   * Kerberos credentials of its own and Vault has no notion of acting on
-   * behalf of someone, so an impersonated call authenticates as the real
-   * user behind it.
-   *
-   * @param conf the configuration
-   * @return the UGI to authenticate with
-   * @throws IOException if the principal or keytab is missing, or the
-   *     keytab login fails
+   * Log in from a keytab, which needs Hadoop security to be on: without
+   * it the login silently yields the current user.
    */
-  static UserGroupInformation kerberosLogin(Configuration conf)
+  static UserGroupInformation loginFromKeytab(String principal, String keytab)
       throws IOException {
-    if (isCurrentUgiMode(conf)) {
-      UserGroupInformation ugi = VaultDelegationTokens.actualUser();
-      LOG.debug("Using current UGI for Vault Kerberos auth: {}",
-          ugi.getUserName());
-      return ugi;
+    if (!UserGroupInformation.isSecurityEnabled()) {
+      throw new IOException("Kerberos auth to Vault as " + principal
+          + " requires hadoop.security.authentication=kerberos");
     }
-    String principal = conf.get(
-        VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY);
-    String keytab = conf.get(
-        VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY);
-    if (principal == null || principal.isEmpty()) {
-      throw new IOException("Kerberos principal not configured. Set '"
-          + VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY
-          + "' or use ugi.mode=current.");
-    }
-    if (keytab == null || keytab.isEmpty()) {
-      throw new IOException("Kerberos keytab not configured. Set '"
-          + VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY
-          + "' or use ugi.mode=current.");
-    }
-    return UserGroupInformation
-        .loginUserFromKeytabAndReturnUGI(serverPrincipal(principal), keytab);
+    return UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal,
+        keytab);
   }
 
   /**
    * The configured principal with {@code _HOST} expanded to the local
-   * FQDN, the form the login will use. Resolved on every call: a host
-   * name that was wrong when the process started must not outlive the
-   * fix for the life of the JVM.
+   * host name the way the daemon logins expand it.
    *
-   * @param principal the configured principal, possibly null
+   * @param principal the configured principal
+   * @param conf the configuration naming the interface to resolve by
    * @return the principal to authenticate as
    * @throws IOException if the host name cannot be resolved
    */
-  private static String serverPrincipal(String principal) throws IOException {
-    if (principal == null || principal.isEmpty()) {
+  static String serverPrincipal(String principal, Configuration conf)
+      throws IOException {
+    if (!principal.contains(SecurityUtil.HOSTNAME_PATTERN)) {
       return principal;
     }
-    return SecurityUtil.getServerPrincipal(principal, (String) null);
+    return SecurityUtil.getServerPrincipal(principal, localHostName(conf));
+  }
+
+  /** The local host name as SecurityUtil.login resolves it. */
+  private static String localHostName(Configuration conf) throws IOException {
+    String dnsInterface = conf.getTrimmed(
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_DNS_INTERFACE_KEY);
+    String nameServer = conf.getTrimmed(
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_DNS_NAMESERVER_KEY);
+    if (dnsInterface != null && !dnsInterface.isEmpty()) {
+      return DNS.getDefaultHost(dnsInterface, nameServer, true);
+    }
+    return InetAddress.getLocalHost().getCanonicalHostName();
   }
 
   static boolean isCurrentUgiMode(Configuration conf) {
     return VaultCredentialProviderConfig.KERBEROS_UGI_MODE_CURRENT
-        .equalsIgnoreCase(conf.get(
+        .equalsIgnoreCase(conf.getTrimmed(
             VaultCredentialProviderConfig.KERBEROS_UGI_MODE_KEY,
             VaultCredentialProviderConfig.KERBEROS_UGI_MODE_DEFAULT));
   }
 
-  private static boolean hasToken(UserGroupInformation ugi,
-      VaultConnectionInfo connInfo, String mountPath) {
-    return VaultDelegationTokens.selectToken(ugi.getCredentials(), connInfo,
-        mountPath) != null;
-  }
-
   /**
-   * The token itself, as an identity: its digest, whichever of the
-   * configuration, the systemd credential or the environment it came
-   * from. Naming the source instead would keep one client across a
-   * rotation, and would name a source the login does not use when the
-   * systemd credential is unreadable and the environment answers.
+   * The token by digest, whichever of the configuration, the systemd
+   * credential or the environment it came from: a rotated token is a new
+   * identity.
    */
-  private static String tokenSource(Configuration conf) {
+  private static String tokenSource(Configuration conf) throws IOException {
     String token = VaultCredentialProviderConfig.resolveToken(conf);
     if (token == null || token.isEmpty()) {
       return "none";
@@ -261,7 +255,7 @@ abstract class VaultClientIdentity {
     return new OfToken("test", "", name);
   }
 
-  /** A Vault token, named by where it comes from. */
+  /** A Vault token, named by its digest. */
   private static final class OfToken extends VaultClientIdentity {
     private final String source;
 
@@ -300,7 +294,7 @@ abstract class VaultClientIdentity {
   }
 
   /**
-   * A Kerberos login: either the caller's own UGI, or the configured
+   * A Kerberos login: either a UGI holding one, or the configured
    * principal and keytab, which are one identity for the whole process.
    */
   private static final class OfKerberos extends VaultClientIdentity {
@@ -325,17 +319,29 @@ abstract class VaultClientIdentity {
 
     static OfKerberos ofKeytab(String baseUrl, String settings,
         String mountPath, Configuration conf) throws IOException {
+      String principal = conf.getTrimmed(
+          VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY, "");
+      String keytab = conf.getTrimmed(
+          VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY, "");
+      if (principal.isEmpty()) {
+        throw new IOException("Kerberos principal not configured. Set '"
+            + VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY
+            + "' or use ugi.mode=current.");
+      }
+      if (keytab.isEmpty()) {
+        throw new IOException("Kerberos keytab not configured. Set '"
+            + VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY
+            + "' or use ugi.mode=current.");
+      }
       return new OfKerberos(baseUrl, settings, mountPath, null,
-          serverPrincipal(conf.get(
-              VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY)),
-          conf.get(VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY));
+          serverPrincipal(principal, conf), keytab);
     }
 
     @Override
     VaultAuthMethod createAuthMethod(Configuration conf,
         VaultConnectionInfo connInfo) throws IOException {
       return new KerberosVaultAuth(conf, connInfo, mountPath,
-          ugi != null ? ugi : kerberosLogin(conf));
+          ugi != null ? ugi : loginFromKeytab(principal, keytab));
     }
 
     @Override

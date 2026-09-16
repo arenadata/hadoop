@@ -18,18 +18,29 @@
 
 package org.apache.hadoop.security.alias.vault;
 
+import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivilegedExceptionAction;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.net.DNS;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.security.alias.vault.VaultKerberosTestFixture.CLIENT_PRINCIPAL;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -43,11 +54,32 @@ public class TestVaultClientIdentity {
   private static final String URI_STRING =
       "vault://https@vault.example.com:8200/secret/hadoop/creds";
 
+  @ClassRule
+  public static final TemporaryFolder FOLDER = new TemporaryFolder();
+
+  private static final VaultKerberosTestFixture KRB =
+      new VaultKerberosTestFixture();
+
   private VaultConnectionInfo connInfo;
+
+  @BeforeClass
+  public static void startKdc() throws Exception {
+    KRB.start(FOLDER.getRoot());
+  }
+
+  @AfterClass
+  public static void stopKdc() {
+    KRB.stop();
+  }
 
   @Before
   public void setUp() throws Exception {
     connInfo = new VaultConnectionInfo(new URI(URI_STRING));
+  }
+
+  @After
+  public void tearDown() {
+    UserGroupInformation.setLoginUser(null);
   }
 
   @Test
@@ -94,9 +126,54 @@ public class TestVaultClientIdentity {
     Configuration expanded = dedicatedConf();
     expanded.set(VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY,
         SecurityUtil.getServerPrincipal("vault/_HOST@EXAMPLE.COM",
-            (String) null));
+            InetAddress.getLocalHost().getCanonicalHostName()));
 
     assertEquals(identity(dedicatedConf()), identity(expanded));
+  }
+
+  @Test
+  public void testDedicatedKerberosIdentityExpandsTheHostByTheDnsInterface()
+      throws Exception {
+    Configuration byInterface = dedicatedConf();
+    byInterface.set(
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_DNS_INTERFACE_KEY, "lo");
+    Configuration expanded = new Configuration(byInterface);
+    expanded.set(VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY,
+        SecurityUtil.getServerPrincipal("vault/_HOST@EXAMPLE.COM",
+            DNS.getDefaultHost("lo", null, true)));
+
+    assertEquals(identity(byInterface), identity(expanded));
+  }
+
+  @Test
+  public void testDedicatedIdentityRequiresPrincipalAndKeytab()
+      throws Exception {
+    Configuration noKeytab = dedicatedConf();
+    noKeytab.unset(VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY);
+    intercept(IOException.class, "Kerberos keytab not configured",
+        () -> identity(noKeytab));
+
+    Configuration noPrincipal = dedicatedConf();
+    noPrincipal.set(VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY, " ");
+    intercept(IOException.class, "Kerberos principal not configured",
+        () -> identity(noPrincipal));
+  }
+
+  @Test
+  public void testCallerWithoutKerberosLoginUsesTheLoginUser()
+      throws Exception {
+    Configuration conf = currentUgiConf();
+    UserGroupInformation loginUser = KRB.loginFromKeytab(CLIENT_PRINCIPAL);
+    UserGroupInformation.setLoginUser(loginUser);
+    UserGroupInformation remote = UserGroupInformation.createRemoteUser("alice");
+    remote.setAuthenticationMethod(
+        UserGroupInformation.AuthenticationMethod.KERBEROS);
+
+    VaultClientIdentity identity = identityAs(loginUser, conf);
+
+    assertEquals(identity, identityAs(remote, conf));
+    assertEquals(identity,
+        identityAs(UserGroupInformation.createRemoteUser("nobody"), conf));
   }
 
   @Test
@@ -142,6 +219,18 @@ public class TestVaultClientIdentity {
   }
 
   @Test
+  public void testProxiedCallerUsesTheRealUsersToken() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.AUTH_METHOD_KEY,
+        VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION);
+    UserGroupInformation holder = containerWithToken("hive");
+    UserGroupInformation proxy =
+        UserGroupInformation.createProxyUser("bob", holder);
+
+    assertEquals(identityAs(holder, conf), identityAs(proxy, conf));
+  }
+
+  @Test
   public void testDelegationIdentityIsPerSession() throws Exception {
     Configuration conf = new Configuration(false);
     conf.set(VaultCredentialProviderConfig.AUTH_METHOD_KEY,
@@ -173,12 +262,10 @@ public class TestVaultClientIdentity {
         identity(conf));
   }
 
-  /** A UGI that reports Kerberos credentials without a real login. */
-  private static UserGroupInformation kerberosUser(String name) {
-    UserGroupInformation ugi = UserGroupInformation.createRemoteUser(name);
-    ugi.setAuthenticationMethod(
-        UserGroupInformation.AuthenticationMethod.KERBEROS);
-    return ugi;
+  /** A user logged in from the keytab: a session of their own. */
+  private static UserGroupInformation kerberosUser(String name)
+      throws IOException {
+    return KRB.loginFromKeytab(name);
   }
 
   /** A YARN container: no Kerberos credentials, one Vault token. */

@@ -94,6 +94,17 @@ public final class VaultCredentialProviderConfig {
   public static final String KERBEROS_UGI_MODE_DEFAULT = "dedicated";
   public static final String KERBEROS_UGI_MODE_CURRENT = "current";
 
+  public static final String DELEGATION_TOKEN_ENABLED_KEY =
+      CONFIG_PREFIX + "delegation.token.enabled";
+  public static final boolean DELEGATION_TOKEN_ENABLED_DEFAULT = true;
+
+  public static final String DELEGATION_TOKEN_RENEWABLE_KEY =
+      CONFIG_PREFIX + "delegation.token.renewable";
+  public static final boolean DELEGATION_TOKEN_RENEWABLE_DEFAULT = true;
+
+  public static final String DELEGATION_TOKEN_SERVERS_KEY =
+      CONFIG_PREFIX + "delegation.token.servers";
+
   public static final String SSL_PREFIX = CONFIG_PREFIX + "ssl.";
 
   public static final String SSL_TRUSTSTORE_LOCATION_KEY =
@@ -120,14 +131,17 @@ public final class VaultCredentialProviderConfig {
       CONFIG_PREFIX + "cache.ttl.ms";
   public static final long CACHE_TTL_MS_DEFAULT = 600000;
 
+  public static final String CACHE_NEGATIVE_TTL_MS_KEY =
+      CONFIG_PREFIX + "cache.negative.ttl.ms";
+  public static final long CACHE_NEGATIVE_TTL_MS_DEFAULT = 60000;
+
   public static final String CACHE_MAX_SIZE_KEY =
       CONFIG_PREFIX + "cache.max.size";
   public static final int CACHE_MAX_SIZE_DEFAULT = 4096;
 
   /**
-   * A numeric property, reported as a configuration error rather than as
-   * an unchecked exception: these are read while a credential provider is
-   * being built, where only IOException is expected.
+   * A numeric property. A value that is not a number is an IOException,
+   * the only exception expected while a credential provider is built.
    *
    * @param conf the Hadoop configuration
    * @param key the property
@@ -163,6 +177,24 @@ public final class VaultCredentialProviderConfig {
     if (value <= 0) {
       throw new IOException(key + " must be greater than zero, but is "
           + value);
+    }
+    return value;
+  }
+
+  /**
+   * A numeric property that must not be negative.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @param defaultValue the value to use when the property is unset
+   * @return the configured value
+   * @throws IOException if the value is not a number or is negative
+   */
+  static long nonNegativeNumber(Configuration conf, String key,
+      long defaultValue) throws IOException {
+    long value = number(conf, key, defaultValue);
+    if (value < 0) {
+      throw new IOException(key + " must not be negative, but is " + value);
     }
     return value;
   }
@@ -215,19 +247,40 @@ public final class VaultCredentialProviderConfig {
    *
    * @param conf the Hadoop configuration
    * @return the Vault token, or null if not found
+   * @throws IOException if the token cannot be sent as an HTTP header
    */
-  public static String resolveToken(Configuration conf) {
-    String token = conf.get(TOKEN_KEY);
-    if (token != null && !token.isEmpty()) {
-      return token;
+  public static String resolveToken(Configuration conf) throws IOException {
+    String token = conf.getTrimmed(TOKEN_KEY);
+    if (token == null || token.isEmpty()) {
+      token = readSystemdCredential(conf);
     }
-
-    token = readSystemdCredential(conf);
-    if (token != null && !token.isEmpty()) {
-      return token;
+    if (token == null || token.isEmpty()) {
+      token = System.getenv(VAULT_TOKEN_ENV);
     }
+    if (token == null) {
+      return null;
+    }
+    token = token.trim();
+    if (token.isEmpty()) {
+      return null;
+    }
+    checkToken(token);
+    return token;
+  }
 
-    return System.getenv(VAULT_TOKEN_ENV);
+  /**
+   * The token is sent as an HTTP header, which rejects whitespace and
+   * control characters with an exception that quotes the value; reject
+   * them first, without quoting it.
+   */
+  static void checkToken(String token) throws IOException {
+    for (int i = 0; i < token.length(); i++) {
+      char c = token.charAt(i);
+      if (c <= ' ' || c == 0x7f) {
+        throw new IOException(
+            "Vault token contains whitespace or control characters");
+      }
+    }
   }
 
   /**
@@ -242,8 +295,8 @@ public final class VaultCredentialProviderConfig {
     if (credDir == null || credDir.isEmpty()) {
       return null;
     }
-    File credFile = new File(credDir, conf.get(SYSTEMD_CREDENTIAL_NAME_KEY,
-        SYSTEMD_CREDENTIAL_NAME_DEFAULT));
+    File credFile = new File(credDir, conf.getTrimmed(
+        SYSTEMD_CREDENTIAL_NAME_KEY, SYSTEMD_CREDENTIAL_NAME_DEFAULT));
     if (!credFile.isFile()) {
       LOG.debug("systemd credential file not found: {}", credFile);
       return null;

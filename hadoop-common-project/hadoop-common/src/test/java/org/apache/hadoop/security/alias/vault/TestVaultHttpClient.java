@@ -20,13 +20,19 @@ package org.apache.hadoop.security.alias.vault;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.Certificate;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.io.IOUtils;
@@ -41,6 +47,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -53,6 +60,7 @@ import static org.junit.Assert.fail;
 public class TestVaultHttpClient {
 
   private static final String TEST_TOKEN = "s.testtoken12345";
+  private static final String NOT_FOUND = "{\"errors\":[]}";
 
   @Rule
   public TemporaryFolder tempDir = new TemporaryFolder();
@@ -72,6 +80,7 @@ public class TestVaultHttpClient {
 
     VaultAuthMethod auth = c -> TEST_TOKEN;
 
+    server.setExecutor(Executors.newCachedThreadPool());
     server.start();
     client = new VaultHttpClient(connInfo, auth, 5000, 5000, 1, 100);
   }
@@ -118,6 +127,37 @@ public class TestVaultHttpClient {
   }
 
   @Test
+  public void testDedicatedTruststoreLoadsWithoutAPassword()
+      throws Exception {
+    File trustStore = new File(tempDir.getRoot(), "vault-truststore.jks");
+    KeyStoreTestUtil.createTrustStore(trustStore.getPath(), "changeit",
+        new HashMap<String, Certificate>());
+    Configuration sslConf = new Configuration(false);
+    sslConf.set(VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY,
+        trustStore.getPath());
+    VaultConnectionInfo https = new VaultConnectionInfo(
+        new URI("vault://https@localhost:" + port + "/secret/hadoop"));
+
+    new VaultHttpClient(sslConf, https, c -> TEST_TOKEN).close();
+  }
+
+  @Test
+  public void testHttpSettingsAreValidated() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY, "-1");
+    intercept(IOException.class,
+        VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY
+            + " must not be negative",
+        () -> new VaultHttpClient(conf, connInfo, c -> TEST_TOKEN));
+
+    conf.unset(VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY);
+    conf.set(VaultCredentialProviderConfig.RETRY_COUNT_KEY, "three");
+    intercept(IOException.class,
+        VaultCredentialProviderConfig.RETRY_COUNT_KEY + " is not a number",
+        () -> new VaultHttpClient(conf, connInfo, c -> TEST_TOKEN));
+  }
+
+  @Test
   public void testReadSecret() throws Exception {
     server.createContext("/v1/secret/data/hadoop/db.password",
         exchange -> {
@@ -136,40 +176,83 @@ public class TestVaultHttpClient {
     server.createContext("/v1/secret/data/hadoop/missing",
         exchange -> {
           assertTokenHeader(exchange);
-          sendResponse(exchange, 404, "");
+          sendResponse(exchange, 404, NOT_FOUND);
         });
+    server.createContext("/v1/secret/data/hadoop/silent",
+        exchange -> sendResponse(exchange, 404, ""));
 
-    String value = client.readSecret("secret/data/hadoop/missing", "value");
-    assertNull(value);
+    assertNull(client.readSecret("secret/data/hadoop/missing", "value"));
+    assertNull(client.readSecret("secret/data/hadoop/silent", "value"));
+  }
+
+  @Test
+  public void testNotFoundWithErrorsIsAnError() throws Exception {
+    server.createContext("/v1/secrt/data/hadoop/x",
+        exchange -> sendResponse(exchange, 404, "{\"errors\":[\"no handler "
+            + "for route 'secrt/data/hadoop/x'. route entry not found.\"]}"));
+
+    intercept(IOException.class, "no handler for route",
+        () -> client.readSecret("secrt/data/hadoop/x", "value"));
+  }
+
+  @Test
+  public void testDeletedSecretKeepsItsVersion() throws Exception {
+    server.createContext("/v1/secret/data/hadoop/deleted",
+        exchange -> sendResponse(exchange, 404, "{\"data\":{\"data\":null,"
+            + "\"metadata\":{\"version\":4,\"destroyed\":false,"
+            + "\"deletion_time\":\"2026-09-16T10:00:00Z\"}}}"));
+
+    VaultHttpClient.Secret secret =
+        client.readSecretFields("secret/data/hadoop/deleted");
+    assertTrue(secret.getFields().isEmpty());
+    assertEquals(4, secret.getVersion());
+    assertNull(client.readSecret("secret/data/hadoop/deleted", "value"));
+  }
+
+  @Test
+  public void testFieldsKeepTheirJsonTypes() throws Exception {
+    server.createContext("/v1/secret/data/hadoop/typed",
+        exchange -> sendResponse(exchange, 200, "{\"data\":{\"data\":"
+            + "{\"value\":\"pw\",\"port\":5432,\"tls\":{\"verify\":true}},"
+            + "\"metadata\":{\"version\":2}}}"));
+
+    assertEquals("pw", client.readSecret("secret/data/hadoop/typed", "value"));
+    assertEquals("5432",
+        client.readSecret("secret/data/hadoop/typed", "port"));
+    intercept(IOException.class, "Field tls of secret/data/hadoop/typed is "
+        + "not a string",
+        () -> client.readSecret("secret/data/hadoop/typed", "tls"));
+
+    VaultHttpClient.Secret secret =
+        client.readSecretFields("secret/data/hadoop/typed");
+    assertEquals(5432, secret.getFields().get("port"));
+    assertTrue(secret.getFields().get("tls") instanceof Map);
   }
 
   @Test
   public void testWriteSecret() throws Exception {
-    final boolean[] called = {false};
+    final String[] body = {null};
     server.createContext("/v1/secret/data/hadoop/new.key",
         exchange -> {
           assertTokenHeader(exchange);
-          if ("GET".equals(exchange.getRequestMethod())) {
-            // the secret already holds a field of someone else's
-            sendResponse(exchange, 200, "{\"data\":{\"data\":"
-                + "{\"username\":\"dbuser\"},\"metadata\":"
-                + "{\"version\":3}}}");
-            return;
-          }
           assertEquals("POST", exchange.getRequestMethod());
-          String body = new String(
+          body[0] = new String(
               IOUtils.toByteArray(exchange.getRequestBody()),
               StandardCharsets.UTF_8);
-          assertTrue(body, body.contains("\"value\":\"secret123\""));
-          assertTrue(body, body.contains("\"username\":\"dbuser\""));
-          assertTrue(body, body.contains("\"cas\":3"));
-          called[0] = true;
-          sendResponse(exchange, 200,
-              "{\"data\":{\"version\":4}}");
+          sendResponse(exchange, 200, "{\"data\":{\"version\":4}}");
         });
 
-    client.writeSecret("secret/data/hadoop/new.key", "value", "secret123");
-    assertTrue("Write handler should have been called", called[0]);
+    Map<String, Object> fields = new HashMap<>();
+    fields.put("username", "dbuser");
+    fields.put("port", 5432);
+    fields.put("value", "secret123");
+    client.writeSecret("secret/data/hadoop/new.key", fields, 3);
+
+    assertNotNull("Write handler should have been called", body[0]);
+    assertTrue(body[0], body[0].contains("\"value\":\"secret123\""));
+    assertTrue(body[0], body[0].contains("\"username\":\"dbuser\""));
+    assertTrue(body[0], body[0].contains("\"port\":5432"));
+    assertTrue(body[0], body[0].contains("\"cas\":3"));
   }
 
   @Test
@@ -185,16 +268,17 @@ public class TestVaultHttpClient {
         });
 
     List<String> keys = client.listSecrets("secret/metadata/hadoop");
-    assertEquals(2, keys.size());
+    assertEquals(3, keys.size());
     assertTrue(keys.contains("key1"));
     assertTrue(keys.contains("key2"));
+    assertTrue(keys.contains("subdir/"));
   }
 
   @Test
   public void testListSecretsNotFound() throws Exception {
     server.createContext("/v1/secret/metadata/hadoop",
         exchange -> {
-          sendResponse(exchange, 404, "");
+          sendResponse(exchange, 404, NOT_FOUND);
         });
 
     List<String> keys = client.listSecrets("secret/metadata/hadoop");
@@ -243,10 +327,34 @@ public class TestVaultHttpClient {
         });
 
     VaultHttpClient reauthClient =
-        new VaultHttpClient(connInfo, auth, 5000, 5000, 2, 100);
+        new VaultHttpClient(connInfo, auth, 5000, 5000, 0, 100);
     String value = reauthClient.readSecret("secret/data/hadoop/auth.test", "value");
     assertEquals("secret", value);
-    assertTrue("Should have retried after 403", callCount.get() >= 2);
+    assertEquals("re-authentication needs no retry budget", 2,
+        callCount.get());
+  }
+
+  @Test
+  public void testPersistentForbiddenReportsTheStatusAndBody()
+      throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    AtomicInteger authCount = new AtomicInteger(0);
+    server.createContext("/v1/secret/data/hadoop/denied", exchange -> {
+      callCount.incrementAndGet();
+      sendResponse(exchange, 403, "{\"errors\":[\"permission denied\"]}");
+    });
+    VaultHttpClient denied = new VaultHttpClient(connInfo, c -> {
+      authCount.incrementAndGet();
+      return TEST_TOKEN;
+    }, 5000, 5000, 3, 100);
+
+    IOException e = intercept(IOException.class, "permission denied",
+        () -> denied.readSecret("secret/data/hadoop/denied", "value"));
+
+    assertTrue(e.getMessage(), e.getMessage().contains("status 403"));
+    assertEquals("one request, one re-authentication, one more request", 2,
+        callCount.get());
+    assertEquals(2, authCount.get());
   }
 
   @Test
@@ -265,18 +373,162 @@ public class TestVaultHttpClient {
   }
 
   @Test
-  public void testServerError() throws Exception {
+  public void testServerErrorIsRetriedThenReported() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
     server.createContext("/v1/secret/data/hadoop/error.key",
         exchange -> {
+          callCount.incrementAndGet();
           sendResponse(exchange, 500, "{\"errors\":[\"internal error\"]}");
         });
 
+    IOException e = intercept(IOException.class, "failed after 2 attempts",
+        () -> client.readSecret("secret/data/hadoop/error.key", "value"));
+
+    assertEquals(2, callCount.get());
+    assertTrue(e.getCause().getMessage(),
+        e.getCause().getMessage().contains("status 500"));
+  }
+
+  @Test
+  public void testTransientStatusIsRetriedUntilItClears() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    server.createContext("/v1/secret/data/hadoop/sealed",
+        exchange -> {
+          if (callCount.incrementAndGet() == 1) {
+            sendResponse(exchange, 503, "{\"errors\":[\"Vault is sealed\"]}");
+          } else {
+            sendResponse(exchange, 200,
+                "{\"data\":{\"data\":{\"value\":\"ok\"}}}");
+          }
+        });
+
+    assertEquals("ok", client.readSecret("secret/data/hadoop/sealed", "value"));
+    assertEquals(2, callCount.get());
+  }
+
+  @Test
+  public void testBadRequestIsNotRetried() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    server.createContext("/v1/secret/data/hadoop/cas",
+        exchange -> {
+          callCount.incrementAndGet();
+          sendResponse(exchange, 400, "{\"errors\":[\"check-and-set "
+              + "parameter did not match the current version\"]}");
+        });
+
+    intercept(IOException.class, "status 400", () -> client.writeSecret(
+        "secret/data/hadoop/cas", new HashMap<>(), 1));
+    assertEquals(1, callCount.get());
+  }
+
+  /**
+   * The JDK client itself reconnects once when a kept-alive connection
+   * turns out closed, so the server has to drop two connections before
+   * the failure reaches the retry loop.
+   */
+  @Test
+  public void testConnectionResetIsRetried() throws Exception {
+    ServerSocket sockets = new ServerSocket(0, 50,
+        InetAddress.getLoopbackAddress());
+    String body = "{\"data\":{\"data\":{\"value\":\"ok\"}}}";
+    Thread flaky = new Thread(() -> {
+      try {
+        sockets.accept().close();
+        sockets.accept().close();
+        try (Socket second = sockets.accept()) {
+          InputStream in = second.getInputStream();
+          StringBuilder request = new StringBuilder();
+          int c;
+          while ((c = in.read()) >= 0) {
+            request.append((char) c);
+            if (request.toString().endsWith("\r\n\r\n")) {
+              break;
+            }
+          }
+          OutputStream out = second.getOutputStream();
+          out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+              + "Content-Length: " + body.length()
+              + "\r\nConnection: close\r\n\r\n" + body)
+              .getBytes(StandardCharsets.UTF_8));
+          out.flush();
+        }
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
+    flaky.start();
     try {
-      client.readSecret("secret/data/hadoop/error.key", "value");
-      fail("should throw IOException");
-    } catch (IOException e) {
-      assertTrue(e.getMessage().contains("500"));
+      VaultConnectionInfo flakyInfo = new VaultConnectionInfo(new URI(
+          "vault://http@localhost:" + sockets.getLocalPort()
+              + "/secret/hadoop"));
+      VaultHttpClient flakyClient =
+          new VaultHttpClient(flakyInfo, c -> TEST_TOKEN, 5000, 5000, 1, 10);
+
+      assertEquals("ok",
+          flakyClient.readSecret("secret/data/hadoop/reset", "value"));
+    } finally {
+      sockets.close();
+      flaky.join(5000);
     }
+  }
+
+  @Test
+  public void testAWriteIsNotRepeatedAfterItWasSent() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    server.createContext("/v1/secret/data/hadoop/slow", exchange -> {
+      callCount.incrementAndGet();
+      IOUtils.toByteArray(exchange.getRequestBody());
+      try {
+        Thread.sleep(1500);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      sendResponse(exchange, 200, "{\"data\":{\"version\":1}}");
+    });
+    VaultHttpClient impatient =
+        new VaultHttpClient(connInfo, c -> TEST_TOKEN, 5000, 300, 2, 10);
+
+    intercept(IOException.class, "not repeated", () -> impatient.writeSecret(
+        "secret/data/hadoop/slow", new HashMap<>(), 0));
+
+    assertEquals(1, callCount.get());
+  }
+
+  @Test
+  public void testADeleteIsRepeatedAfterATimeout() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    server.createContext("/v1/secret/metadata/hadoop/slow", exchange -> {
+      if (callCount.incrementAndGet() == 1) {
+        try {
+          Thread.sleep(1500);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      sendResponse(exchange, 204, "");
+    });
+    VaultHttpClient impatient =
+        new VaultHttpClient(connInfo, c -> TEST_TOKEN, 5000, 300, 2, 10);
+
+    impatient.deleteSecret("secret/metadata/hadoop/slow");
+
+    assertEquals(2, callCount.get());
+  }
+
+  @Test
+  public void testAliasIsPercentEncodedOnTheWire() throws Exception {
+    final String[] paths = {null, null};
+    server.createContext("/v1/secret/data/hadoop/", exchange -> {
+      paths[0] = exchange.getRequestURI().getRawPath();
+      paths[1] = exchange.getRequestURI().getPath();
+      sendResponse(exchange, 200, "{\"data\":{\"data\":{\"value\":\"ok\"}}}");
+    });
+
+    assertEquals("ok", client.readSecret(
+        connInfo.buildDataPath("my key#1?x"), "value"));
+
+    assertEquals("/v1/secret/data/hadoop/my%20key%231%3Fx", paths[0]);
+    assertEquals("/v1/secret/data/hadoop/my key#1?x", paths[1]);
   }
 
   private void assertTokenHeader(HttpExchange exchange) {
@@ -299,22 +551,6 @@ public class TestVaultHttpClient {
         client.readSecret("secret/data/hadoop/db", "password"));
     assertEquals("admin",
         client.readSecret("secret/data/hadoop/db", "username"));
-  }
-
-  @Test
-  public void testWriteCustomKey() throws Exception {
-    final String[] capturedBody = {null};
-    server.createContext("/v1/secret/data/hadoop/db",
-        exchange -> {
-          assertTokenHeader(exchange);
-          capturedBody[0] = new String(
-              IOUtils.toByteArray(exchange.getRequestBody()),
-              StandardCharsets.UTF_8);
-          sendResponse(exchange, 200, "{\"data\":{\"version\":1}}");
-        });
-
-    client.writeSecret("secret/data/hadoop/db", "password", "new_pass");
-    assertTrue(capturedBody[0].contains("\"password\":\"new_pass\""));
   }
 
   private void sendResponse(HttpExchange exchange, int statusCode,

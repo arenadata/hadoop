@@ -68,9 +68,11 @@ public class VaultDelegationTokenAuth implements VaultAuthMethod {
     }
     String loginUrl = connInfo.getApiUrl(VaultDelegationTokens.authMountPath(
         token.getService().toString()) + "/login");
-    String body = VaultAuthRequests.post(client, loginUrl, null,
+    String action = "Vault delegation token login";
+    String body = client.retrying(action, () -> VaultAuthRequests.post(
+        client, loginUrl, null,
         VaultAuthRequests.json("delegation_token", token.encodeToUrlString()),
-        "Vault delegation token login");
+        action));
     String vaultToken = VaultAuthRequests.clientToken(body, loginUrl);
     LOG.debug("Authenticated to {} with the delegation token of {}",
         loginUrl, owner.getUserName());

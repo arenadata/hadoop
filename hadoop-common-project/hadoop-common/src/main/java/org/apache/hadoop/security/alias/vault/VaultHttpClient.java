@@ -23,14 +23,14 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.ConnectException;
 import java.net.HttpURLConnection;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -43,6 +43,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManagerFactory;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -52,10 +53,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * HTTP client for communicating with Vault/OpenBao KV v2 API.
- * Uses {@link HttpURLConnection} (lightweight, no connection pool)
- * with configurable timeouts, SSL, retry logic, and automatic
- * re-authentication on 401/403.
+ * HTTP client of the Vault/OpenBao KV v2 API over {@link HttpURLConnection}.
+ * Transport failures and 5xx or 429 responses are retried at a fixed
+ * interval, except for a request Vault may already have applied; a 401 or
+ * 403 gets one re-authentication.
  */
 @InterfaceAudience.Private
 public class VaultHttpClient implements Closeable {
@@ -77,6 +78,7 @@ public class VaultHttpClient implements Closeable {
   private final SSLSocketFactory sslSocketFactory;
   private final AtomicInteger requestsInFlight = new AtomicInteger();
   private final AtomicBoolean destroyed = new AtomicBoolean();
+  private final Object loginLock = new Object();
   private volatile boolean closeRequested;
   private volatile String clientToken;
 
@@ -106,16 +108,16 @@ public class VaultHttpClient implements Closeable {
       VaultAuthMethod authMethod, boolean authenticate) throws IOException {
     this.connInfo = connInfo;
     this.authMethod = authMethod;
-    this.connectTimeoutMs = conf.getInt(
+    this.connectTimeoutMs = setting(conf,
         VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY,
         VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_DEFAULT);
-    this.readTimeoutMs = conf.getInt(
+    this.readTimeoutMs = setting(conf,
         VaultCredentialProviderConfig.READ_TIMEOUT_MS_KEY,
         VaultCredentialProviderConfig.READ_TIMEOUT_MS_DEFAULT);
-    this.retryCount = conf.getInt(
+    this.retryCount = setting(conf,
         VaultCredentialProviderConfig.RETRY_COUNT_KEY,
         VaultCredentialProviderConfig.RETRY_COUNT_DEFAULT);
-    this.retryIntervalMs = conf.getInt(
+    this.retryIntervalMs = setting(conf,
         VaultCredentialProviderConfig.RETRY_INTERVAL_MS_KEY,
         VaultCredentialProviderConfig.RETRY_INTERVAL_MS_DEFAULT);
 
@@ -149,10 +151,21 @@ public class VaultHttpClient implements Closeable {
     this.clientToken = authMethod.authenticate(this);
   }
 
+  private static int setting(Configuration conf, String key,
+      int defaultValue) throws IOException {
+    long value = VaultCredentialProviderConfig.nonNegativeNumber(conf, key,
+        defaultValue);
+    if (value > Integer.MAX_VALUE) {
+      throw new IOException(key + " is too large: " + value);
+    }
+    return (int) value;
+  }
+
   private static SSLFactory createSslFactory(Configuration conf)
       throws IOException {
-    if (conf.get(VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY)
-        != null) {
+    if (!conf.getTrimmed(
+        VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY, "")
+        .isEmpty()) {
       return null;
     }
     SSLFactory factory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
@@ -188,17 +201,19 @@ public class VaultHttpClient implements Closeable {
 
   private static SSLContext buildSslContext(Configuration conf)
       throws IOException, GeneralSecurityException {
-    String truststoreLocation = conf.get(
+    String truststoreLocation = conf.getTrimmed(
         VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY);
-    String truststorePassword = conf.get(
+    String truststorePassword = conf.getTrimmed(
         VaultCredentialProviderConfig.SSL_TRUSTSTORE_PASSWORD_KEY, "");
-    String truststoreType = conf.get(
+    String truststoreType = conf.getTrimmed(
         VaultCredentialProviderConfig.SSL_TRUSTSTORE_TYPE_KEY,
         VaultCredentialProviderConfig.SSL_TRUSTSTORE_TYPE_DEFAULT);
 
     KeyStore truststore = KeyStore.getInstance(truststoreType);
     try (FileInputStream fis = new FileInputStream(truststoreLocation)) {
-      truststore.load(fis, truststorePassword.toCharArray());
+      // A truststore password is only an integrity check; none skips it.
+      truststore.load(fis, truststorePassword.isEmpty() ? null
+          : truststorePassword.toCharArray());
     }
     TrustManagerFactory tmf = TrustManagerFactory.getInstance(
         TrustManagerFactory.getDefaultAlgorithm());
@@ -210,61 +225,92 @@ public class VaultHttpClient implements Closeable {
   }
 
   /**
-   * Read a secret value from Vault using the default key {@code "value"}.
-   */
-  public String readSecret(String dataPath) throws IOException {
-    return readSecret(dataPath, VaultConnectionInfo.DEFAULT_SECRET_KEY);
-  }
-
-  /**
-   * Read a secret value from Vault.
+   * Read one field of a secret as text.
    *
    * @param dataPath the KV v2 data path
    * @param secretKey the key within the secret's data map
-   * @return the secret value, or null if not found
-   * @throws IOException if the request fails
+   * @return the field, or null if the secret or the field does not exist
+   * @throws IOException if the request fails or the field is not a scalar
    */
   public String readSecret(String dataPath, String secretKey)
       throws IOException {
     Secret secret = readSecretFields(dataPath);
-    return secret == null ? null : secret.getFields().get(secretKey);
+    Object value = secret == null ? null : secret.getFields().get(secretKey);
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof String) {
+      return (String) value;
+    }
+    if (value instanceof Number || value instanceof Boolean) {
+      return value.toString();
+    }
+    throw new IOException("Field " + secretKey + " of " + dataPath
+        + " is not a string");
   }
 
   /**
    * Read every field of a secret and the version they belong to.
    *
    * @param dataPath the KV v2 data path
-   * @return the secret, or null if it does not exist
+   * @return the secret, or null if it does not exist; a secret whose
+   *     current version is deleted has no fields but keeps its version
    * @throws IOException if the request fails
    */
   Secret readSecretFields(String dataPath) throws IOException {
-    String url = connInfo.getApiUrl(dataPath);
-
-    String responseBody = executeWithRetry("GET", url, null, false);
-    if (responseBody == null) {
-      return null;
+    Response response = executeWithRetry("GET",
+        connInfo.getApiUrl(dataPath), null, true, true);
+    if (response.getStatus() == HttpURLConnection.HTTP_NOT_FOUND) {
+      return notFound(response.getBody());
     }
 
-    VaultResponse.KvRead response =
-        MAPPER.readValue(responseBody, VaultResponse.KvRead.class);
-    if (response.data == null || response.data.data == null) {
+    VaultResponse.KvRead read = MAPPER.readValue(response.getBody(),
+        VaultResponse.KvRead.class);
+    if (read.data == null || read.data.data == null) {
       return null;
     }
-    return new Secret(response.data.data,
-        response.data.metadata == null ? 0 : response.data.metadata.version);
+    return new Secret(read.data.data,
+        read.data.metadata == null ? 0 : read.data.metadata.version);
+  }
+
+  /**
+   * A KV v2 404 is one of three things: a secret that does not exist
+   * (no errors), a secret whose current version is deleted or destroyed
+   * (metadata without data; a write must name that version), or a path no
+   * engine serves (errors).
+   */
+  private static Secret notFound(String body) throws IOException {
+    if (body == null || body.trim().isEmpty()) {
+      return null;
+    }
+    JsonNode tree;
+    try {
+      tree = MAPPER.readTree(body);
+    } catch (IOException e) {
+      throw new RequestFailedException(HttpURLConnection.HTTP_NOT_FOUND,
+          "Vault request failed with status 404: " + body);
+    }
+    JsonNode errors = tree.path("errors");
+    if (errors.isArray() && errors.size() > 0) {
+      throw new RequestFailedException(HttpURLConnection.HTTP_NOT_FOUND,
+          "Vault request failed with status 404: " + body);
+    }
+    JsonNode version = tree.path("data").path("metadata").path("version");
+    return version.canConvertToInt()
+        ? new Secret(Collections.emptyMap(), version.asInt()) : null;
   }
 
   /** The fields of one KV v2 secret, as of one version. */
   static final class Secret {
-    private final Map<String, String> fields;
+    private final Map<String, Object> fields;
     private final int version;
 
-    Secret(Map<String, String> fields, int version) {
-      this.fields = fields;
+    Secret(Map<String, Object> fields, int version) {
+      this.fields = Collections.unmodifiableMap(new HashMap<>(fields));
       this.version = version;
     }
 
-    Map<String, String> getFields() {
+    Map<String, Object> getFields() {
       return fields;
     }
 
@@ -274,59 +320,27 @@ public class VaultHttpClient implements Closeable {
   }
 
   /**
-   * List secrets at the given metadata path.
+   * List the keys directly under a metadata path; a key ending in a slash
+   * is a directory.
    *
    * @param metadataPath the KV v2 metadata path
-   * @return list of secret names
+   * @return the keys, empty if the path does not exist
    * @throws IOException if the request fails
    */
   public List<String> listSecrets(String metadataPath) throws IOException {
-    String url = connInfo.getApiUrl(metadataPath) + "?list=true";
-
-    String responseBody = executeWithRetry("GET", url, null, false);
-    if (responseBody == null) {
+    Response response = executeWithRetry("GET",
+        connInfo.getApiUrl(metadataPath) + "?list=true", null, true, true);
+    if (response.getStatus() == HttpURLConnection.HTTP_NOT_FOUND) {
+      notFound(response.getBody());
       return Collections.emptyList();
     }
 
-    VaultResponse.KvList response =
-        MAPPER.readValue(responseBody, VaultResponse.KvList.class);
-    if (response.data == null || response.data.keys == null) {
+    VaultResponse.KvList list = MAPPER.readValue(response.getBody(),
+        VaultResponse.KvList.class);
+    if (list.data == null || list.data.keys == null) {
       return Collections.emptyList();
     }
-
-    // Filter out directory entries (trailing /)
-    List<String> result = new ArrayList<>();
-    for (String key : response.data.keys) {
-      if (!key.endsWith("/")) {
-        result.add(key);
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Write a secret value to Vault using the default key {@code "value"}.
-   */
-  public void writeSecret(String dataPath, String value) throws IOException {
-    writeSecret(dataPath, VaultConnectionInfo.DEFAULT_SECRET_KEY, value);
-  }
-
-  /**
-   * Write a secret value to Vault.
-   *
-   * @param dataPath the KV v2 data path
-   * @param secretKey the key within the secret's data map
-   * @param value the secret value
-   * @throws IOException if the request fails
-   */
-  public void writeSecret(String dataPath, String secretKey, String value)
-      throws IOException {
-    Secret current = readSecretFields(dataPath);
-    Map<String, String> fields = current == null
-        ? new HashMap<>() : new HashMap<>(current.getFields());
-    fields.put(secretKey, value);
-    writeSecret(dataPath, fields,
-        current == null ? 0 : current.getVersion());
+    return list.data.keys;
   }
 
   /**
@@ -340,112 +354,194 @@ public class VaultHttpClient implements Closeable {
    * @param version the version the fields were read from, 0 to create
    * @throws IOException if the request fails
    */
-  void writeSecret(String dataPath, Map<String, String> fields, int version)
+  void writeSecret(String dataPath, Map<String, Object> fields, int version)
       throws IOException {
-    String url = connInfo.getApiUrl(dataPath);
-
     Map<String, Object> options = new HashMap<>();
     options.put("cas", version);
     Map<String, Object> body = new HashMap<>();
     body.put("data", fields);
     body.put("options", options);
 
-    executeWithRetry("POST", url, MAPPER.writeValueAsString(body), true);
+    executeWithRetry("POST", connInfo.getApiUrl(dataPath),
+        MAPPER.writeValueAsString(body), false, false);
   }
 
   /**
-   * Delete a secret from Vault.
+   * Delete a secret from Vault, every version of it.
    *
    * @param metadataPath the KV v2 metadata path for the alias
    * @throws IOException if the request fails
    */
   public void deleteSecret(String metadataPath) throws IOException {
-    String url = connInfo.getApiUrl(metadataPath);
-    executeWithRetry("DELETE", url, null, true);
+    executeWithRetry("DELETE", connInfo.getApiUrl(metadataPath), null, true,
+        false);
   }
 
-  /**
-   * Execute an HTTP request with retry and re-authentication logic.
-   */
-  private String executeWithRetry(String method, String url,
-      String jsonBody, boolean failOnNotFound) throws IOException {
+  private Response executeWithRetry(String method, String url,
+      String jsonBody, boolean idempotent, boolean allowNotFound)
+      throws IOException {
     if (authMethod == null) {
       throw new IOException("Vault client for " + connInfo.getBaseUrl()
           + " has no auth method");
     }
     requestsInFlight.incrementAndGet();
     try {
-      return execute(method, url, jsonBody, failOnNotFound);
+      return execute(method, url, jsonBody, idempotent, allowNotFound);
     } finally {
       requestsInFlight.decrementAndGet();
       destroyIfIdle();
     }
   }
 
-  private String execute(String method, String url,
-      String jsonBody, boolean failOnNotFound) throws IOException {
-    IOException lastException = null;
-
-    for (int attempt = 0; attempt <= retryCount; attempt++) {
-      if (attempt > 0) {
-        try {
-          Thread.sleep(retryIntervalMs);
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new IOException("Retry interrupted", e);
+  private Response execute(String method, String url, String jsonBody,
+      boolean idempotent, boolean allowNotFound) throws IOException {
+    String action = "Vault request " + method + " " + url;
+    boolean reauthenticated = false;
+    IOException lastFailure = null;
+    int attempt = 0;
+    while (true) {
+      String token = clientToken;
+      Response response;
+      try {
+        response = send(method, url, token, jsonBody, idempotent);
+      } catch (IOException e) {
+        if (!isTransient(e)) {
+          throw e;
         }
+        response = null;
+        lastFailure = e;
+        LOG.warn("{} failed (attempt {}/{}): {}", action, attempt + 1,
+            retryCount + 1, e.getMessage());
       }
 
-      try {
-        HttpURLConnection conn = createConnection(url, method);
-        conn.setRequestProperty(VAULT_TOKEN_HEADER, clientToken);
-
-        if (jsonBody != null) {
-          conn.setDoOutput(true);
-          conn.setRequestProperty("Content-Type", CONTENT_TYPE_JSON);
-          byte[] bodyBytes = jsonBody.getBytes(StandardCharsets.UTF_8);
-          try (OutputStream os = conn.getOutputStream()) {
-            os.write(bodyBytes);
+      if (response != null) {
+        int status = response.getStatus();
+        if (status == HttpURLConnection.HTTP_OK
+            || status == HttpURLConnection.HTTP_NO_CONTENT
+            || (status == HttpURLConnection.HTTP_NOT_FOUND && allowNotFound)) {
+          return response;
+        }
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED
+            || status == HttpURLConnection.HTTP_FORBIDDEN) {
+          if (reauthenticated) {
+            throw response.failure();
           }
-        }
-
-        int statusCode = conn.getResponseCode();
-
-        if (statusCode == HttpURLConnection.HTTP_OK
-            || statusCode == HttpURLConnection.HTTP_NO_CONTENT) {
-          return readResponseBody(conn);
-        }
-
-        if (statusCode == HttpURLConnection.HTTP_NOT_FOUND
-            && !failOnNotFound) {
-          conn.disconnect();
-          return null;
-        }
-
-        if (statusCode == HttpURLConnection.HTTP_UNAUTHORIZED
-            || statusCode == HttpURLConnection.HTTP_FORBIDDEN) {
-          conn.disconnect();
-          LOG.debug("Received {} from Vault, re-authenticating "
-              + "(attempt {}/{})", statusCode, attempt + 1, retryCount + 1);
-          clientToken = authMethod.authenticate(this);
+          reauthenticated = true;
+          LOG.debug("{} answered {}, re-authenticating", action, status);
+          reauthenticate(token);
           continue;
         }
+        RequestFailedException failure = response.failure();
+        if (!failure.isTransient()) {
+          throw failure;
+        }
+        lastFailure = failure;
+        LOG.warn("{} failed (attempt {}/{}): {}", action, attempt + 1,
+            retryCount + 1, failure.getMessage());
+      }
 
-        String body = readErrorBody(conn);
-        conn.disconnect();
-        throw new IOException("Vault request failed with status "
-            + statusCode + ": " + body);
+      if (attempt >= retryCount) {
+        throw new IOException(action + " failed after " + (attempt + 1)
+            + " attempts", lastFailure);
+      }
+      attempt++;
+      sleep(retryIntervalMs);
+    }
+  }
 
-      } catch (ConnectException | SocketTimeoutException e) {
-        LOG.warn("Vault connection failed (attempt {}/{}): {}",
-            attempt + 1, retryCount + 1, e.getMessage());
-        lastException = e;
+  /**
+   * Log in again, unless another thread already replaced the token that
+   * was refused.
+   */
+  private void reauthenticate(String refusedToken) throws IOException {
+    synchronized (loginLock) {
+      if (clientToken == refusedToken) {
+        clientToken = authMethod.authenticate(this);
       }
     }
+  }
 
-    throw new IOException(
-        "Vault request failed after " + (retryCount + 1) + " attempts",
-        lastException);
+  /**
+   * Run a request that is safe to repeat, retrying transient failures on
+   * this client's budget.
+   */
+  <T> T retrying(String action, RetriableCall<T> call) throws IOException {
+    IOException lastFailure = null;
+    for (int attempt = 0; ; attempt++) {
+      if (attempt > 0) {
+        sleep(retryIntervalMs);
+      }
+      try {
+        return call.call();
+      } catch (IOException e) {
+        if (!isTransient(e)) {
+          throw e;
+        }
+        lastFailure = e;
+        LOG.warn("{} failed (attempt {}/{}): {}", action, attempt + 1,
+            retryCount + 1, e.getMessage());
+        if (attempt >= retryCount) {
+          throw new IOException(action + " failed after " + (attempt + 1)
+              + " attempts", lastFailure);
+        }
+      }
+    }
+  }
+
+  /** A request that may be repeated. */
+  interface RetriableCall<T> {
+    T call() throws IOException;
+  }
+
+  private static boolean isTransient(IOException e) {
+    return e instanceof SocketException
+        || e instanceof SocketTimeoutException
+        || e instanceof UnknownHostException
+        || (e instanceof RequestFailedException
+            && ((RequestFailedException) e).isTransient());
+  }
+
+  private static void sleep(long ms) throws IOException {
+    try {
+      Thread.sleep(ms);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Retry interrupted", e);
+    }
+  }
+
+  /**
+   * One request. A failure after the request was handed to the connection
+   * is not retriable for a request that is not idempotent: Vault may have
+   * applied it.
+   */
+  private Response send(String method, String url, String token,
+      String jsonBody, boolean idempotent) throws IOException {
+    HttpURLConnection conn = createConnection(url, method);
+    conn.setRequestProperty(VAULT_TOKEN_HEADER, token);
+    if (jsonBody != null) {
+      conn.setDoOutput(true);
+      conn.setRequestProperty("Content-Type", CONTENT_TYPE_JSON);
+    }
+    conn.connect();
+    try {
+      if (jsonBody != null) {
+        try (OutputStream os = conn.getOutputStream()) {
+          os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+        }
+      }
+      int status = conn.getResponseCode();
+      String body = status >= HttpURLConnection.HTTP_BAD_REQUEST
+          ? readErrorBody(conn) : readResponseBody(conn);
+      return new Response(status, body);
+    } catch (IOException e) {
+      conn.disconnect();
+      if (idempotent) {
+        throw e;
+      }
+      throw new IOException(method + " " + url
+          + " was sent but got no response; not repeated", e);
+    }
   }
 
   /**
@@ -476,7 +572,7 @@ public class VaultHttpClient implements Closeable {
       throws IOException {
     InputStream is = conn.getInputStream();
     if (is == null) {
-      return null;
+      return "";
     }
     try {
       return IOUtils.toString(is, StandardCharsets.UTF_8);
@@ -501,6 +597,50 @@ public class VaultHttpClient implements Closeable {
     }
   }
 
+  /** A response Vault sent: status and body. */
+  private static final class Response {
+    private final int status;
+    private final String body;
+
+    Response(int status, String body) {
+      this.status = status;
+      this.body = body;
+    }
+
+    int getStatus() {
+      return status;
+    }
+
+    String getBody() {
+      return body;
+    }
+
+    RequestFailedException failure() {
+      return new RequestFailedException(status,
+          "Vault request failed with status " + status + ": " + body);
+    }
+  }
+
+  /** A response with a status the caller cannot use. */
+  static final class RequestFailedException extends IOException {
+    private static final long serialVersionUID = 1L;
+    private final int status;
+
+    RequestFailedException(int status, String message) {
+      super(message);
+      this.status = status;
+    }
+
+    int getStatus() {
+      return status;
+    }
+
+    /** Whether a later attempt may succeed: the server is busy or down. */
+    boolean isTransient() {
+      return status >= HttpURLConnection.HTTP_INTERNAL_ERROR || status == 429;
+    }
+  }
+
   /**
    * Release the SSL machinery once no request is using it. The client is
    * closed when the cache evicts it, which can happen while another
@@ -519,13 +659,5 @@ public class VaultHttpClient implements Closeable {
         sslFactory.destroy();
       }
     }
-  }
-
-  VaultConnectionInfo getConnInfo() {
-    return connInfo;
-  }
-
-  VaultAuthMethod getAuthMethod() {
-    return authMethod;
   }
 }

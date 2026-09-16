@@ -33,15 +33,9 @@ import org.slf4j.LoggerFactory;
  * Kerberos/SPNEGO client of the Vault Kerberos auth backend: login, and
  * the delegation token operations of the authenticated principal.
  *
- * <p>Supports two UGI modes via
- * {@code hadoop.security.credential.vault.kerberos.ugi.mode}:
- * <ul>
- *   <li>{@code dedicated} (default) — creates a dedicated UGI from the
- *       configured principal and keytab.</li>
- *   <li>{@code current} — uses the current login UGI of the process
- *       (e.g. NameNode's or Spark driver's own Kerberos identity).
- *       No separate principal/keytab configuration needed.</li>
- * </ul>
+ * <p>The UGI that logs in is chosen by {@link VaultClientIdentity}: the
+ * configured principal and keytab with {@code ugi.mode=dedicated}, the
+ * caller's own or the process login with {@code ugi.mode=current}.
  */
 @InterfaceAudience.Private
 public class KerberosVaultAuth implements VaultAuthMethod {
@@ -54,20 +48,6 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   private final String mountPath;
   private final String loginUrl;
   private final String servicePrincipal;
-
-  /**
-   * Create a Kerberos auth method for the configured UGI mode.
-   *
-   * @param conf the Hadoop configuration
-   * @param connInfo the Vault connection info
-   * @throws IOException if the keytab login fails or the auth mount path
-   *     is empty
-   */
-  public KerberosVaultAuth(Configuration conf,
-      VaultConnectionInfo connInfo) throws IOException {
-    this(conf, connInfo, VaultAuthRequests.mountPath(conf),
-        VaultClientIdentity.kerberosLogin(conf));
-  }
 
   /**
    * Create a Kerberos auth method acting as the given UGI.
@@ -101,8 +81,8 @@ public class KerberosVaultAuth implements VaultAuthMethod {
    * Obtain a delegation token owned by the authenticated principal.
    *
    * @param client the client to send the request through
-   * @param renewer the principal allowed to renew the token, or null;
-   *     see {@link VaultDelegationTokens#renewerName}
+   * @param renewer the principal allowed to renew the token, or null for
+   *     a token nobody renews; see {@link VaultDelegationTokens#renewerName}
    * @return the token, with the service of this server and auth mount
    * @throws IOException if Vault refuses or the response is malformed
    */
@@ -158,18 +138,5 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   private String ownerRealm() {
     String realm = new KerberosName(vaultUgi.getUserName()).getRealm();
     return realm != null ? realm : KerberosName.getDefaultRealm();
-  }
-
-  /**
-   * Build the Kerberos login path from the auth backend mount path.
-   * The login endpoint of the Vault Kerberos auth method is
-   * {@code /v1/<mount>/login}.
-   *
-   * @param mountPath the auth backend mount path, e.g. {@code auth/kerberos}
-   * @return the login path relative to {@code /v1/}
-   * @throws IOException if the mount path is empty
-   */
-  static String buildLoginPath(String mountPath) throws IOException {
-    return VaultAuthRequests.mountPath(mountPath) + "/login";
   }
 }
