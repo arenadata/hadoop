@@ -30,7 +30,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,6 +48,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.thirdparty.com.google.common.base.Ticker;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -166,7 +169,7 @@ public class TestVaultDelegationTokens {
 
     assertEquals(MockVault.SECRET_VALUE, password);
     String client = KRB.principal(CLIENT_PRINCIPAL);
-    assertEquals(Arrays.asList("spnego-login " + client,
+    assertEquals(Arrays.asList(
         "issue " + client + " renewer=" + RENEWER_PRINCIPAL,
         "token-login 1"), requests);
   }
@@ -367,14 +370,62 @@ public class TestVaultDelegationTokens {
   }
 
   @Test
+  public void testDefaultCacheSettingsAreNotReportedAsIgnored()
+      throws Exception {
+    GenericTestUtils.LogCapturer logs = GenericTestUtils.LogCapturer
+        .captureLogs(LoggerFactory.getLogger(VaultCredentialProvider.class));
+    Configuration tunedConf = new Configuration(conf);
+    tunedConf.setInt(
+        VaultCredentialProviderConfig.CLIENT_CACHE_MAX_SIZE_KEY, 8);
+    readAs(clientUgi, tunedConf);
+
+    readAs(clientUgi, conf);
+
+    assertFalse(logs.getOutput(), logs.getOutput().contains("is ignored"));
+  }
+
+  @Test
   public void testIdleClientIsDroppedFromTheCache() throws Exception {
-    conf.setLong(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 1);
+    MovingTicker ticker = new MovingTicker();
+    VaultCredentialProvider.setClientCacheTicker(ticker);
 
     assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
-    Thread.sleep(20);
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
+    assertEquals(requests.toString(), 1, spnegoLoginCount());
+
+    ticker.advanceMs(
+        VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_DEFAULT + 1);
     assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
 
     assertEquals(requests.toString(), 2, spnegoLoginCount());
+  }
+
+  @Test
+  public void testTheClientOutlivesAnIdleClientCacheWhenNotBound()
+      throws Exception {
+    MovingTicker ticker = new MovingTicker();
+    VaultCredentialProvider.setClientCacheTicker(ticker);
+    conf.setLong(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 0);
+
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
+    ticker.advanceMs(TimeUnit.DAYS.toMillis(7));
+    assertEquals(MockVault.SECRET_VALUE, readAs(clientUgi, conf));
+
+    assertEquals(requests.toString(), 1, spnegoLoginCount());
+  }
+
+  /** A clock the test moves by hand. */
+  private static final class MovingTicker extends Ticker {
+    private final AtomicLong nanos = new AtomicLong();
+
+    void advanceMs(long ms) {
+      nanos.addAndGet(TimeUnit.MILLISECONDS.toNanos(ms));
+    }
+
+    @Override
+    public long read() {
+      return nanos.get();
+    }
   }
 
   @Test

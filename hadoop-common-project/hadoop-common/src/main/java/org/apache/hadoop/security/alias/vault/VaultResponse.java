@@ -52,6 +52,14 @@ final class VaultResponse {
   static class KvReadData {
     @JsonProperty("data")
     Map<String, String> data;
+    @JsonProperty("metadata")
+    KvReadMetadata metadata;
+  }
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  static class KvReadMetadata {
+    @JsonProperty("version")
+    int version;
   }
 
   /**

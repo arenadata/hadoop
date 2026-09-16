@@ -124,6 +124,70 @@ public final class VaultCredentialProviderConfig {
       CONFIG_PREFIX + "cache.max.size";
   public static final int CACHE_MAX_SIZE_DEFAULT = 4096;
 
+  /**
+   * A numeric property, reported as a configuration error rather than as
+   * an unchecked exception: these are read while a credential provider is
+   * being built, where only IOException is expected.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @param defaultValue the value to use when the property is unset
+   * @return the configured value
+   * @throws IOException if the value is not a number
+   */
+  static long number(Configuration conf, String key, long defaultValue)
+      throws IOException {
+    String value = conf.getTrimmed(key);
+    if (value == null || value.isEmpty()) {
+      return defaultValue;
+    }
+    try {
+      return conf.getLong(key, defaultValue);
+    } catch (NumberFormatException e) {
+      throw new IOException(key + " is not a number: " + value, e);
+    }
+  }
+
+  /**
+   * A numeric property that must be greater than zero.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @param defaultValue the value to use when the property is unset
+   * @return the configured value
+   * @throws IOException if the value is not a positive number
+   */
+  static long positiveNumber(Configuration conf, String key,
+      long defaultValue) throws IOException {
+    long value = number(conf, key, defaultValue);
+    if (value <= 0) {
+      throw new IOException(key + " must be greater than zero, but is "
+          + value);
+    }
+    return value;
+  }
+
+  /**
+   * Whether this configuration sets the property itself, rather than
+   * inheriting it from {@code core-default.xml}.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @return true if the value comes from anything but the defaults
+   */
+  static boolean isSetByUser(Configuration conf, String key) {
+    String[] sources = conf.getPropertySources(key);
+    if (sources == null || sources.length == 0) {
+      return false;
+    }
+    for (String source : sources) {
+      if (!source.endsWith("-default.xml")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private VaultCredentialProviderConfig() {
   }
 
@@ -164,19 +228,6 @@ public final class VaultCredentialProviderConfig {
     }
 
     return System.getenv(VAULT_TOKEN_ENV);
-  }
-
-  /**
-   * The systemd credential file holding the Vault token, or null when
-   * systemd passed none. Which token is used and which identity it is
-   * cached under must follow the same decision, so both go through here.
-   *
-   * @param conf the Hadoop configuration
-   * @return the credential file, or null if there is none
-   */
-  static File systemdCredentialFile(Configuration conf) {
-    return systemdCredentialFile(conf,
-        System.getenv(CREDENTIALS_DIRECTORY_ENV));
   }
 
   /**

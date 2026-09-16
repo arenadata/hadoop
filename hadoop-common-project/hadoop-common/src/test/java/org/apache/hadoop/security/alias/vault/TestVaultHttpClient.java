@@ -18,20 +18,28 @@
 
 package org.apache.hadoop.security.alias.vault;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.security.cert.Certificate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.io.IOUtils;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -45,6 +53,9 @@ import static org.junit.Assert.fail;
 public class TestVaultHttpClient {
 
   private static final String TEST_TOKEN = "s.testtoken12345";
+
+  @Rule
+  public TemporaryFolder tempDir = new TemporaryFolder();
 
   private HttpServer server;
   private int port;
@@ -70,6 +81,40 @@ public class TestVaultHttpClient {
     if (server != null) {
       server.stop(0);
     }
+  }
+
+  /**
+   * The SSL machinery is built before the Vault login, so a login that
+   * fails must not leave the truststore reload timer running.
+   */
+  @Test
+  public void testFailedLoginReleasesTheSslMachinery() throws Exception {
+    File trustStore = new File(tempDir.getRoot(), "truststore.jks");
+    KeyStoreTestUtil.createTrustStore(trustStore.getPath(), "changeit",
+        new HashMap<String, Certificate>());
+    Configuration sslConf = new Configuration();
+    sslConf.set("ssl.client.truststore.location", trustStore.getPath());
+    sslConf.set("ssl.client.truststore.password", "changeit");
+    VaultConnectionInfo https = new VaultConnectionInfo(
+        new URI("vault://https@localhost:" + port + "/secret/hadoop"));
+    long before = sslMonitorThreads();
+
+    try {
+      new VaultHttpClient(sslConf, https, c -> {
+        throw new IOException("vault said 403");
+      });
+      fail("should throw");
+    } catch (IOException e) {
+      assertEquals("vault said 403", e.getMessage());
+    }
+
+    GenericTestUtils.waitFor(() -> sslMonitorThreads() <= before, 20, 5000);
+  }
+
+  private static long sslMonitorThreads() {
+    return Thread.getAllStackTraces().keySet().stream()
+        .filter(t -> t.getName().contains("SSL Certificates Store Monitor"))
+        .count();
   }
 
   @Test
@@ -104,14 +149,23 @@ public class TestVaultHttpClient {
     server.createContext("/v1/secret/data/hadoop/new.key",
         exchange -> {
           assertTokenHeader(exchange);
+          if ("GET".equals(exchange.getRequestMethod())) {
+            // the secret already holds a field of someone else's
+            sendResponse(exchange, 200, "{\"data\":{\"data\":"
+                + "{\"username\":\"dbuser\"},\"metadata\":"
+                + "{\"version\":3}}}");
+            return;
+          }
           assertEquals("POST", exchange.getRequestMethod());
           String body = new String(
               IOUtils.toByteArray(exchange.getRequestBody()),
               StandardCharsets.UTF_8);
-          assertTrue(body.contains("\"value\":\"secret123\""));
+          assertTrue(body, body.contains("\"value\":\"secret123\""));
+          assertTrue(body, body.contains("\"username\":\"dbuser\""));
+          assertTrue(body, body.contains("\"cas\":3"));
           called[0] = true;
           sendResponse(exchange, 200,
-              "{\"data\":{\"version\":1}}");
+              "{\"data\":{\"version\":4}}");
         });
 
     client.writeSecret("secret/data/hadoop/new.key", "value", "secret123");

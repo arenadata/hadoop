@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.security.alias.vault;
 
+import java.io.File;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -33,12 +35,17 @@ import com.sun.net.httpserver.HttpServer;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -52,6 +59,9 @@ public class TestVaultCredentialProviderIntegration {
 
   private static final String TEST_TOKEN = "s.integrationtest";
   private static final ObjectMapper MAPPER = new ObjectMapper();
+
+  @Rule
+  public TemporaryFolder tempDir = new TemporaryFolder();
 
   private HttpServer server;
   private int port;
@@ -90,6 +100,39 @@ public class TestVaultCredentialProviderIntegration {
       server.stop(0);
     }
     VaultCredentialProvider.clearCaches();
+  }
+
+  /**
+   * Resolving the SSL truststore password goes through the credential
+   * providers, so building an https Vault client re-enters this provider.
+   * It must report that plainly instead of deadlocking on its own cache
+   * load, so the truststore falls back to its default password.
+   */
+  @Test
+  public void testSslPasswordLookupDoesNotRecurse() throws Exception {
+    File trustStore = new File(tempDir.getRoot(), "truststore.jks");
+    KeyStoreTestUtil.createTrustStore(trustStore.getPath(), "changeit",
+        new HashMap<String, java.security.cert.Certificate>());
+    Configuration sslConf = new Configuration(conf);
+    sslConf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "vault://https@localhost:" + port + "/secret/hadoop/creds");
+    sslConf.set("ssl.client.truststore.location", trustStore.getPath());
+    sslConf.setInt(
+        VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY, 1000);
+    sslConf.setInt(VaultCredentialProviderConfig.READ_TIMEOUT_MS_KEY, 1000);
+
+    IOException e = intercept(IOException.class,
+        () -> sslConf.getPassword("ssl.password"));
+
+    assertFalse(causes(e), causes(e).contains("Recursive load"));
+  }
+
+  private static String causes(Throwable t) {
+    StringBuilder sb = new StringBuilder();
+    for (Throwable c = t; c != null; c = c.getCause()) {
+      sb.append(c).append('\n');
+    }
+    return sb.toString();
   }
 
   @Test

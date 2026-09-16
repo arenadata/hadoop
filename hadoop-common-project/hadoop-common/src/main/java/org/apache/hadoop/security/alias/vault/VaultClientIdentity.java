@@ -18,11 +18,8 @@
 
 package org.apache.hadoop.security.alias.vault;
 
-import java.io.File;
 import java.io.IOException;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -53,14 +50,45 @@ abstract class VaultClientIdentity {
   private static final Logger LOG =
       LoggerFactory.getLogger(VaultClientIdentity.class);
 
-  /** Configured principal to the same principal with {@code _HOST} expanded. */
-  private static final Map<String, String> SERVER_PRINCIPALS =
-      new ConcurrentHashMap<>();
+  /** Properties that shape the client, beyond the credential it presents. */
+  private static final String[] CLIENT_SETTINGS = {
+      VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY,
+      VaultCredentialProviderConfig.READ_TIMEOUT_MS_KEY,
+      VaultCredentialProviderConfig.RETRY_COUNT_KEY,
+      VaultCredentialProviderConfig.RETRY_INTERVAL_MS_KEY,
+      VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY,
+      VaultCredentialProviderConfig.SSL_TRUSTSTORE_TYPE_KEY,
+      VaultCredentialProviderConfig.KERBEROS_SERVICE_PRINCIPAL_KEY,
+  };
 
   private final String baseUrl;
+  private final String settings;
 
   private VaultClientIdentity(String baseUrl) {
+    this(baseUrl, "");
+  }
+
+  private VaultClientIdentity(String baseUrl, String settings) {
     this.baseUrl = baseUrl;
+    this.settings = settings;
+  }
+
+  /**
+   * The client is built from the configuration that first asked for this
+   * identity, so two configurations that would build different clients
+   * are different identities.
+   */
+  private static String clientSettings(Configuration conf) {
+    StringBuilder sb = new StringBuilder();
+    for (String key : CLIENT_SETTINGS) {
+      sb.append(conf.getTrimmed(key, "")).append('\n');
+    }
+    return sb.toString();
+  }
+
+  /** Whether the server and the client settings are the same. */
+  final boolean sameClient(VaultClientIdentity that) {
+    return baseUrl.equals(that.baseUrl) && settings.equals(that.settings);
   }
 
   /**
@@ -91,10 +119,11 @@ abstract class VaultClientIdentity {
   static VaultClientIdentity of(Configuration conf,
       VaultConnectionInfo connInfo) throws IOException {
     String baseUrl = connInfo.getBaseUrl();
+    String settings = clientSettings(conf);
     String name = VaultCredentialProviderConfig.authMethod(conf);
     if (VaultCredentialProviderConfig.AUTH_METHOD_TOKEN
         .equalsIgnoreCase(name)) {
-      return new OfToken(baseUrl, tokenSource(conf));
+      return new OfToken(baseUrl, settings, tokenSource(conf));
     }
     boolean delegation = VaultCredentialProviderConfig.AUTH_METHOD_DELEGATION
         .equalsIgnoreCase(name);
@@ -113,14 +142,14 @@ abstract class VaultClientIdentity {
             + " has no Vault delegation token for "
             + connInfo.getServerService());
       }
-      return new OfDelegationToken(baseUrl, mountPath, ugi);
+      return new OfDelegationToken(baseUrl, settings, mountPath, ugi);
     }
     if (!ugi.hasKerberosCredentials()) {
       if (hasToken(ugi, connInfo, mountPath)) {
         LOG.debug("User {} has no Kerberos credentials, using the Vault "
             + "delegation token for {}", ugi.getUserName(),
             connInfo.getServerService());
-        return new OfDelegationToken(baseUrl, mountPath, ugi);
+        return new OfDelegationToken(baseUrl, settings, mountPath, ugi);
       }
       if (isCurrentUgiMode(conf)) {
         throw new IOException("User " + ugi.getUserName()
@@ -129,8 +158,8 @@ abstract class VaultClientIdentity {
       }
     }
     return isCurrentUgiMode(conf)
-        ? OfKerberos.ofUser(baseUrl, mountPath, ugi)
-        : OfKerberos.ofKeytab(baseUrl, mountPath, conf);
+        ? OfKerberos.ofUser(baseUrl, settings, mountPath, ugi)
+        : OfKerberos.ofKeytab(baseUrl, settings, mountPath, conf);
   }
 
   /**
@@ -173,9 +202,9 @@ abstract class VaultClientIdentity {
 
   /**
    * The configured principal with {@code _HOST} expanded to the local
-   * FQDN. Memoized: the identity names the principal the login will use,
-   * and it is built on every provider creation, while the expansion
-   * resolves the host name.
+   * FQDN, the form the login will use. Resolved on every call: a host
+   * name that was wrong when the process started must not outlive the
+   * fix for the life of the JVM.
    *
    * @param principal the configured principal, possibly null
    * @return the principal to authenticate as
@@ -185,12 +214,7 @@ abstract class VaultClientIdentity {
     if (principal == null || principal.isEmpty()) {
       return principal;
     }
-    String expanded = SERVER_PRINCIPALS.get(principal);
-    if (expanded == null) {
-      expanded = SecurityUtil.getServerPrincipal(principal, (String) null);
-      SERVER_PRINCIPALS.put(principal, expanded);
-    }
-    return expanded;
+    return SecurityUtil.getServerPrincipal(principal, (String) null);
   }
 
   static boolean isCurrentUgiMode(Configuration conf) {
@@ -207,26 +231,26 @@ abstract class VaultClientIdentity {
   }
 
   /**
-   * Where the Vault token comes from, as an identity. A token set in the
-   * configuration is per caller, so it is named by its digest; the
-   * systemd credential and the environment variable belong to the
-   * process and are the same token for every caller.
+   * The token itself, as an identity: its digest, whichever of the
+   * configuration, the systemd credential or the environment it came
+   * from. Naming the source instead would keep one client across a
+   * rotation, and would name a source the login does not use when the
+   * systemd credential is unreadable and the environment answers.
    */
   private static String tokenSource(Configuration conf) {
-    String configured = conf.get(VaultCredentialProviderConfig.TOKEN_KEY);
-    if (configured != null && !configured.isEmpty()) {
-      return "conf:" + DigestUtils.sha256Hex(configured);
+    String token = VaultCredentialProviderConfig.resolveToken(conf);
+    if (token == null || token.isEmpty()) {
+      return "none";
     }
-    File systemd =
-        VaultCredentialProviderConfig.systemdCredentialFile(conf);
-    if (systemd != null) {
-      return "systemd:" + systemd.getPath();
-    }
-    return "env";
+    return "token:" + DigestUtils.sha256Hex(token);
   }
 
   String getBaseUrl() {
     return baseUrl;
+  }
+
+  String getSettings() {
+    return settings;
   }
 
   /**
@@ -234,15 +258,15 @@ abstract class VaultClientIdentity {
    * {@link VaultCredentialProvider}.
    */
   static VaultClientIdentity forTesting(String name) {
-    return new OfToken("test", name);
+    return new OfToken("test", "", name);
   }
 
   /** A Vault token, named by where it comes from. */
   private static final class OfToken extends VaultClientIdentity {
     private final String source;
 
-    OfToken(String baseUrl, String source) {
-      super(baseUrl);
+    OfToken(String baseUrl, String settings, String source) {
+      super(baseUrl, settings);
       this.source = source;
     }
 
@@ -261,13 +285,12 @@ abstract class VaultClientIdentity {
         return false;
       }
       OfToken that = (OfToken) o;
-      return getBaseUrl().equals(that.getBaseUrl())
-          && source.equals(that.source);
+      return sameClient(that) && source.equals(that.source);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(getBaseUrl(), source);
+      return Objects.hash(getBaseUrl(), getSettings(), source);
     }
 
     @Override
@@ -286,23 +309,23 @@ abstract class VaultClientIdentity {
     private final String principal;
     private final String keytab;
 
-    private OfKerberos(String baseUrl, String mountPath,
+    private OfKerberos(String baseUrl, String settings, String mountPath,
         UserGroupInformation ugi, String principal, String keytab) {
-      super(baseUrl);
+      super(baseUrl, settings);
       this.mountPath = mountPath;
       this.ugi = ugi;
       this.principal = principal;
       this.keytab = keytab;
     }
 
-    static OfKerberos ofUser(String baseUrl, String mountPath,
-        UserGroupInformation ugi) {
-      return new OfKerberos(baseUrl, mountPath, ugi, null, null);
+    static OfKerberos ofUser(String baseUrl, String settings,
+        String mountPath, UserGroupInformation ugi) {
+      return new OfKerberos(baseUrl, settings, mountPath, ugi, null, null);
     }
 
-    static OfKerberos ofKeytab(String baseUrl, String mountPath,
-        Configuration conf) throws IOException {
-      return new OfKerberos(baseUrl, mountPath, null,
+    static OfKerberos ofKeytab(String baseUrl, String settings,
+        String mountPath, Configuration conf) throws IOException {
+      return new OfKerberos(baseUrl, settings, mountPath, null,
           serverPrincipal(conf.get(
               VaultCredentialProviderConfig.KERBEROS_PRINCIPAL_KEY)),
           conf.get(VaultCredentialProviderConfig.KERBEROS_KEYTAB_KEY));
@@ -324,7 +347,7 @@ abstract class VaultClientIdentity {
         return false;
       }
       OfKerberos that = (OfKerberos) o;
-      return getBaseUrl().equals(that.getBaseUrl())
+      return sameClient(that)
           && mountPath.equals(that.mountPath)
           && Objects.equals(ugi, that.ugi)
           && Objects.equals(principal, that.principal)
@@ -333,7 +356,8 @@ abstract class VaultClientIdentity {
 
     @Override
     public int hashCode() {
-      return Objects.hash(getBaseUrl(), mountPath, ugi, principal, keytab);
+      return Objects.hash(getBaseUrl(), getSettings(), mountPath, ugi,
+          principal, keytab);
     }
 
     @Override
@@ -352,9 +376,9 @@ abstract class VaultClientIdentity {
     private final String mountPath;
     private final UserGroupInformation ugi;
 
-    OfDelegationToken(String baseUrl, String mountPath,
+    OfDelegationToken(String baseUrl, String settings, String mountPath,
         UserGroupInformation ugi) {
-      super(baseUrl);
+      super(baseUrl, settings);
       this.mountPath = mountPath;
       this.ugi = ugi;
     }
@@ -374,14 +398,14 @@ abstract class VaultClientIdentity {
         return false;
       }
       OfDelegationToken that = (OfDelegationToken) o;
-      return getBaseUrl().equals(that.getBaseUrl())
+      return sameClient(that)
           && mountPath.equals(that.mountPath)
           && ugi.equals(that.ugi);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(getBaseUrl(), mountPath, ugi);
+      return Objects.hash(getBaseUrl(), getSettings(), mountPath, ugi);
     }
 
     @Override

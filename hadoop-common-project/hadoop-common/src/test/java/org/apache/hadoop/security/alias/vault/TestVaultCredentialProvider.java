@@ -22,7 +22,9 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.junit.After;
@@ -36,9 +38,14 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -127,10 +134,8 @@ public class TestVaultCredentialProvider {
 
   @Test
   public void testCreateCredentialEntry() throws Exception {
-    when(mockClient.readSecret("secret/data/hadoop/creds/new.key", "value"))
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/new.key"))
         .thenReturn(null);
-    doNothing().when(mockClient)
-        .writeSecret("secret/data/hadoop/creds/new.key", "value", "secret_value");
 
     char[] credential = "secret_value".toCharArray();
     CredentialProvider.CredentialEntry entry =
@@ -139,14 +144,14 @@ public class TestVaultCredentialProvider {
     assertNotNull(entry);
     assertEquals("new.key", entry.getAlias());
     assertArrayEquals(credential, entry.getCredential());
-    verify(mockClient).writeSecret(
-        "secret/data/hadoop/creds/new.key", "value", "secret_value");
+    verify(mockClient).writeSecret("secret/data/hadoop/creds/new.key",
+        Collections.singletonMap("value", "secret_value"), 0);
   }
 
   @Test
   public void testCreateCredentialEntryAlreadyExists() throws Exception {
-    when(mockClient.readSecret("secret/data/hadoop/creds/existing", "value"))
-        .thenReturn("old_value");
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/existing"))
+        .thenReturn(secret("value", "old_value"));
 
     try {
       provider.createCredentialEntry("existing", "new_value".toCharArray());
@@ -179,8 +184,8 @@ public class TestVaultCredentialProvider {
 
   @Test
   public void testDeleteCredentialEntry() throws Exception {
-    when(mockClient.readSecret("secret/data/hadoop/creds/to.delete", "value"))
-        .thenReturn("some_value");
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/to.delete"))
+        .thenReturn(secret("value", "some_value"));
     doNothing().when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/to.delete");
 
@@ -191,7 +196,7 @@ public class TestVaultCredentialProvider {
 
   @Test
   public void testDeleteCredentialEntryDoesNotExist() throws Exception {
-    when(mockClient.readSecret("secret/data/hadoop/creds/nonexistent", "value"))
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/nonexistent"))
         .thenReturn(null);
 
     try {
@@ -255,8 +260,9 @@ public class TestVaultCredentialProvider {
     when(mockClient.readSecret("secret/data/hadoop/creds/gone.key", "value"))
         .thenReturn("value1")
         .thenReturn("value1")
-        .thenReturn("value1")
         .thenReturn(null);
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/gone.key"))
+        .thenReturn(secret("value", "value1"));
     doNothing().when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/gone.key");
 
@@ -273,10 +279,9 @@ public class TestVaultCredentialProvider {
     VaultCredentialProvider bob = providerAs("bob");
     when(mockClient.readSecret("secret/data/hadoop/creds/new.key", "value"))
         .thenReturn("old")
-        .thenReturn(null)
         .thenReturn("new");
-    doNothing().when(mockClient)
-        .writeSecret("secret/data/hadoop/creds/new.key", "value", "new");
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/new.key"))
+        .thenReturn(null);
 
     alice.getCredentialEntry("new.key");
     bob.createCredentialEntry("new.key", "new".toCharArray());
@@ -294,8 +299,9 @@ public class TestVaultCredentialProvider {
         VaultClientIdentity.forTesting("writer"));
     when(mockClient.readSecret("secret/data/hadoop/creds/rot.key", "value"))
         .thenReturn("value1")
-        .thenReturn("value1")
         .thenReturn(null);
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/rot.key"))
+        .thenReturn(secret("value", "value1"));
     doNothing().when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/rot.key");
 
@@ -310,6 +316,8 @@ public class TestVaultCredentialProvider {
     VaultCredentialProvider alice = providerAs("alice");
     when(mockClient.readSecret("secret/data/hadoop/creds/stuck.key", "value"))
         .thenReturn("value1");
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/stuck.key"))
+        .thenReturn(secret("value", "value1"));
     doThrow(new IOException("vault said 403")).when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/stuck.key");
 
@@ -322,7 +330,7 @@ public class TestVaultCredentialProvider {
     }
     alice.getCredentialEntry("stuck.key");
 
-    verify(mockClient, times(3))
+    verify(mockClient, times(2))
         .readSecret("secret/data/hadoop/creds/stuck.key", "value");
   }
 
@@ -331,11 +339,11 @@ public class TestVaultCredentialProvider {
     VaultCredentialProvider alice = providerAs("alice");
     VaultCredentialProvider bob = providerAs("bob");
     when(mockClient.readSecret("secret/data/hadoop/creds/half.key", "value"))
-        .thenReturn("old")
-        .thenReturn(null)
         .thenReturn("old");
-    doThrow(new IOException("vault said 403")).when(mockClient)
-        .writeSecret("secret/data/hadoop/creds/half.key", "value", "new");
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/half.key"))
+        .thenReturn(null);
+    doThrow(new IOException("vault said 403")).when(mockClient).writeSecret(
+        eq("secret/data/hadoop/creds/half.key"), anyMap(), eq(0));
 
     alice.getCredentialEntry("half.key");
     try {
@@ -347,8 +355,114 @@ public class TestVaultCredentialProvider {
 
     assertEquals("old",
         new String(alice.getCredentialEntry("half.key").getCredential()));
-    verify(mockClient, times(3))
+    verify(mockClient, times(2))
         .readSecret("secret/data/hadoop/creds/half.key", "value");
+  }
+
+  @Test
+  public void testWriteKeepsTheOtherFieldsOfTheSecret() throws Exception {
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/db"))
+        .thenReturn(secret("username", "dbuser"));
+
+    provider.createCredentialEntry("db", "p".toCharArray());
+
+    Map<String, String> both = new HashMap<>();
+    both.put("username", "dbuser");
+    both.put("value", "p");
+    verify(mockClient).writeSecret("secret/data/hadoop/creds/db", both, 1);
+  }
+
+  @Test
+  public void testDeleteRemovesOnlyThisProvidersField() throws Exception {
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/db"))
+        .thenReturn(secret("username", "dbuser", "value", "p"));
+
+    provider.deleteCredentialEntry("db");
+
+    verify(mockClient).writeSecret("secret/data/hadoop/creds/db",
+        Collections.singletonMap("username", "dbuser"), 1);
+    verify(mockClient, never()).deleteSecret(anyString());
+  }
+
+  @Test
+  public void testDeleteOfTheLastFieldRemovesTheSecret() throws Exception {
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/db"))
+        .thenReturn(secret("value", "p"));
+
+    provider.deleteCredentialEntry("db");
+
+    verify(mockClient).deleteSecret("secret/metadata/hadoop/creds/db");
+    verify(mockClient, never()).writeSecret(anyString(), anyMap(), anyInt());
+  }
+
+  @Test
+  public void testWriteDropsTheAliasForEveryField() throws Exception {
+    URI uri = new URI(TEST_URI + "?key=username");
+    VaultConnectionInfo other = new VaultConnectionInfo(uri);
+    VaultCredentialProvider reader = new VaultCredentialProvider(uri, other,
+        mockClient, true, 60000, VaultClientIdentity.forTesting("reader"));
+    when(mockClient.readSecret("secret/data/hadoop/creds/db", "username"))
+        .thenReturn("dbuser")
+        .thenReturn(null);
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/db"))
+        .thenReturn(secret("username", "dbuser", "value", "p"));
+
+    assertEquals("dbuser",
+        new String(reader.getCredentialEntry("db").getCredential()));
+    providerAs("writer").deleteCredentialEntry("db");
+
+    assertNull(reader.getCredentialEntry("db"));
+  }
+
+  @Test
+  public void testDeleteOfAGoneAliasDropsTheCachedValue() throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    when(mockClient.readSecret("secret/data/hadoop/creds/gone.now", "value"))
+        .thenReturn("value1")
+        .thenReturn(null);
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/gone.now"))
+        .thenReturn(null);
+
+    alice.getCredentialEntry("gone.now");
+    try {
+      alice.deleteCredentialEntry("gone.now");
+      fail("should throw");
+    } catch (IOException e) {
+      assertTrue(e.getMessage(), e.getMessage().contains("does not exist"));
+    }
+
+    assertNull(alice.getCredentialEntry("gone.now"));
+  }
+
+  @Test
+  public void testCreateOfAnExistingAliasRefreshesTheCache()
+      throws Exception {
+    VaultCredentialProvider alice = providerAs("alice");
+    when(mockClient.readSecret("secret/data/hadoop/creds/there", "value"))
+        .thenReturn("stale")
+        .thenReturn("current");
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/there"))
+        .thenReturn(secret("value", "current"));
+
+    alice.getCredentialEntry("there");
+    try {
+      alice.createCredentialEntry("there", "new".toCharArray());
+      fail("should throw");
+    } catch (IOException e) {
+      assertTrue(e.getMessage(), e.getMessage().contains("already exists"));
+    }
+
+    assertEquals("current",
+        new String(alice.getCredentialEntry("there").getCredential()));
+  }
+
+  /** A secret as Vault holds it, at version 1. */
+  private static VaultHttpClient.Secret secret(String... fields) {
+    Map<String, String> data = new HashMap<>();
+    for (int i = 0; i < fields.length; i += 2) {
+      data.put(fields[i], fields[i + 1]);
+    }
+    return new VaultHttpClient.Secret(data, 1);
   }
 
   private VaultCredentialProvider providerAs(String name) throws Exception {
@@ -419,20 +533,21 @@ public class TestVaultCredentialProvider {
 
     when(mockClient.readSecret("secret/data/hadoop/creds/del.key", "value"))
         .thenReturn("value1")
-        .thenReturn("value1")
         .thenReturn(null);
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/del.key"))
+        .thenReturn(secret("value", "value1"));
     doNothing().when(mockClient)
         .deleteSecret("secret/metadata/hadoop/creds/del.key");
 
     // Populate cache
     cached.getCredentialEntry("del.key");
-    // Delete: existence check goes to Vault, then invalidates cache
+    // Delete: reads the secret's fields from Vault, then invalidates cache
     cached.deleteCredentialEntry("del.key");
     // Next read should go to Vault (cache was cleared by delete)
     assertNull(cached.getCredentialEntry("del.key"));
 
-    // 3 calls: initial read, the existence check, post-delete read
-    verify(mockClient, times(3))
+    // 2 calls: initial read and the post-delete read
+    verify(mockClient, times(2))
         .readSecret("secret/data/hadoop/creds/del.key", "value");
   }
 
@@ -442,10 +557,8 @@ public class TestVaultCredentialProvider {
     VaultCredentialProvider cached = new VaultCredentialProvider(
         uri, connInfo, mockClient, true, 60000);
 
-    when(mockClient.readSecret("secret/data/hadoop/creds/new.cached", "value"))
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/new.cached"))
         .thenReturn(null);
-    doNothing().when(mockClient)
-        .writeSecret("secret/data/hadoop/creds/new.cached", "value", "new_val");
 
     // Create populates cache
     cached.createCredentialEntry("new.cached", "new_val".toCharArray());
@@ -456,9 +569,7 @@ public class TestVaultCredentialProvider {
     assertNotNull(entry);
     assertEquals("new_val", new String(entry.getCredential()));
 
-    // Only 1 readSecret call (the existence check in create),
-    // the get after create should be cached
-    verify(mockClient, times(1))
+    verify(mockClient, never())
         .readSecret("secret/data/hadoop/creds/new.cached", "value");
   }
 
@@ -506,14 +617,13 @@ public class TestVaultCredentialProvider {
     VaultCredentialProvider customProvider =
         new VaultCredentialProvider(uri, customConnInfo, mockClient);
 
-    when(mockClient.readSecret(
-        "secret/data/hadoop/creds/new.key", "password"))
+    when(mockClient.readSecretFields("secret/data/hadoop/creds/new.key"))
         .thenReturn(null);
 
     customProvider.createCredentialEntry(
         "new.key", "new_val".toCharArray());
 
-    verify(mockClient).writeSecret(
-        "secret/data/hadoop/creds/new.key", "password", "new_val");
+    verify(mockClient).writeSecret("secret/data/hadoop/creds/new.key",
+        Collections.singletonMap("password", "new_val"), 0);
   }
 }

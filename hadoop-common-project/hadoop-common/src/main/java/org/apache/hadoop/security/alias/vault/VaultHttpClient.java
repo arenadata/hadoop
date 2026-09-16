@@ -35,6 +35,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -73,6 +75,9 @@ public class VaultHttpClient implements Closeable {
   private final int retryIntervalMs;
   private final SSLFactory sslFactory;
   private final SSLSocketFactory sslSocketFactory;
+  private final AtomicInteger requestsInFlight = new AtomicInteger();
+  private final AtomicBoolean destroyed = new AtomicBoolean();
+  private volatile boolean closeRequested;
   private volatile String clientToken;
 
   /**
@@ -122,7 +127,12 @@ public class VaultHttpClient implements Closeable {
       this.sslSocketFactory = null;
     }
 
-    this.clientToken = authenticate ? authMethod.authenticate(this) : null;
+    try {
+      this.clientToken = authenticate ? authMethod.authenticate(this) : null;
+    } catch (IOException | RuntimeException e) {
+      close();
+      throw e;
+    }
   }
 
   VaultHttpClient(VaultConnectionInfo connInfo, VaultAuthMethod authMethod,
@@ -150,7 +160,7 @@ public class VaultHttpClient implements Closeable {
       factory.init();
       LOG.debug("Using Hadoop SSLFactory for Vault connection");
       return factory;
-    } catch (GeneralSecurityException e) {
+    } catch (GeneralSecurityException | IOException e) {
       factory.destroy();
       throw new IOException("Failed to initialize SSL for Vault", e);
     }
@@ -216,6 +226,18 @@ public class VaultHttpClient implements Closeable {
    */
   public String readSecret(String dataPath, String secretKey)
       throws IOException {
+    Secret secret = readSecretFields(dataPath);
+    return secret == null ? null : secret.getFields().get(secretKey);
+  }
+
+  /**
+   * Read every field of a secret and the version they belong to.
+   *
+   * @param dataPath the KV v2 data path
+   * @return the secret, or null if it does not exist
+   * @throws IOException if the request fails
+   */
+  Secret readSecretFields(String dataPath) throws IOException {
     String url = connInfo.getApiUrl(dataPath);
 
     String responseBody = executeWithRetry("GET", url, null, false);
@@ -228,7 +250,27 @@ public class VaultHttpClient implements Closeable {
     if (response.data == null || response.data.data == null) {
       return null;
     }
-    return response.data.data.get(secretKey);
+    return new Secret(response.data.data,
+        response.data.metadata == null ? 0 : response.data.metadata.version);
+  }
+
+  /** The fields of one KV v2 secret, as of one version. */
+  static final class Secret {
+    private final Map<String, String> fields;
+    private final int version;
+
+    Secret(Map<String, String> fields, int version) {
+      this.fields = fields;
+      this.version = version;
+    }
+
+    Map<String, String> getFields() {
+      return fields;
+    }
+
+    int getVersion() {
+      return version;
+    }
   }
 
   /**
@@ -279,15 +321,36 @@ public class VaultHttpClient implements Closeable {
    */
   public void writeSecret(String dataPath, String secretKey, String value)
       throws IOException {
+    Secret current = readSecretFields(dataPath);
+    Map<String, String> fields = current == null
+        ? new HashMap<>() : new HashMap<>(current.getFields());
+    fields.put(secretKey, value);
+    writeSecret(dataPath, fields,
+        current == null ? 0 : current.getVersion());
+  }
+
+  /**
+   * Replace every field of a secret. A KV v2 write replaces the whole
+   * secret, so the caller passes the fields it wants to keep; the version
+   * it read them from is sent as a check-and-set, so a write that raced
+   * another writer fails instead of dropping their fields.
+   *
+   * @param dataPath the KV v2 data path
+   * @param fields the fields the new version holds
+   * @param version the version the fields were read from, 0 to create
+   * @throws IOException if the request fails
+   */
+  void writeSecret(String dataPath, Map<String, String> fields, int version)
+      throws IOException {
     String url = connInfo.getApiUrl(dataPath);
 
-    Map<String, Object> data = new HashMap<>();
-    Map<String, String> innerData = new HashMap<>();
-    innerData.put(secretKey, value);
-    data.put("data", innerData);
+    Map<String, Object> options = new HashMap<>();
+    options.put("cas", version);
+    Map<String, Object> body = new HashMap<>();
+    body.put("data", fields);
+    body.put("options", options);
 
-    String jsonBody = MAPPER.writeValueAsString(data);
-    executeWithRetry("POST", url, jsonBody, true);
+    executeWithRetry("POST", url, MAPPER.writeValueAsString(body), true);
   }
 
   /**
@@ -310,6 +373,17 @@ public class VaultHttpClient implements Closeable {
       throw new IOException("Vault client for " + connInfo.getBaseUrl()
           + " has no auth method");
     }
+    requestsInFlight.incrementAndGet();
+    try {
+      return execute(method, url, jsonBody, failOnNotFound);
+    } finally {
+      requestsInFlight.decrementAndGet();
+      destroyIfIdle();
+    }
+  }
+
+  private String execute(String method, String url,
+      String jsonBody, boolean failOnNotFound) throws IOException {
     IOException lastException = null;
 
     for (int attempt = 0; attempt <= retryCount; attempt++) {
@@ -427,10 +501,23 @@ public class VaultHttpClient implements Closeable {
     }
   }
 
+  /**
+   * Release the SSL machinery once no request is using it. The client is
+   * closed when the cache evicts it, which can happen while another
+   * thread is mid-request with the instance it was handed.
+   */
   @Override
   public void close() {
-    if (sslFactory != null) {
-      sslFactory.destroy();
+    closeRequested = true;
+    destroyIfIdle();
+  }
+
+  private void destroyIfIdle() {
+    if (closeRequested && requestsInFlight.get() == 0
+        && destroyed.compareAndSet(false, true)) {
+      if (sslFactory != null) {
+        sslFactory.destroy();
+      }
     }
   }
 

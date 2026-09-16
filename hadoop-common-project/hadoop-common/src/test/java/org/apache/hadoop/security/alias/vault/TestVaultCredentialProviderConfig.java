@@ -28,9 +28,12 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Tests for {@link VaultCredentialProviderConfig}, focusing on
@@ -128,6 +131,41 @@ public class TestVaultCredentialProviderConfig {
 
     assertNull(VaultCredentialProviderConfig.systemdCredentialFile(
         new Configuration(), credDir.getAbsolutePath()));
+  }
+
+  @Test
+  public void testNumberReportsGarbageAsAConfigurationError()
+      throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, "1h");
+
+    IOException e = intercept(IOException.class, () ->
+        VaultCredentialProviderConfig.number(conf,
+            VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 1L));
+
+    assertTrue(e.getMessage(), e.getMessage().contains("is not a number"));
+  }
+
+  @Test
+  public void testPositiveNumberRejectsZeroAndBelow() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.setLong(VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, 0);
+
+    intercept(IOException.class, "must be greater than zero", () ->
+        VaultCredentialProviderConfig.positiveNumber(conf,
+            VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, 1L));
+  }
+
+  @Test
+  public void testASettingIsTheUsersOnlyWhenTheUserSetIt() throws Exception {
+    Configuration defaults = new Configuration();
+    Configuration set = new Configuration();
+    set.setInt(VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY, 8);
+
+    assertFalse(VaultCredentialProviderConfig.isSetByUser(defaults,
+        VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY));
+    assertTrue(VaultCredentialProviderConfig.isSetByUser(set,
+        VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY));
   }
 
   @Test

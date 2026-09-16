@@ -577,10 +577,13 @@
   <value>3600000</value>
   <description>
     How long a cached VaultHttpClient is kept after its last use, in
-    milliseconds. A client holds an authenticated Vault token and, over
-    https, a truststore reload thread, so the clients of sessions that are
-    gone are released rather than held until the cache size forces them
-    out. The next read for that identity logs in again.
+    milliseconds; 0 keeps it until the cache size evicts it. A client
+    holds an authenticated Vault token and, over https, a truststore
+    reload thread, so the client of a session that is gone is dropped on
+    the first credential read that follows the idle period rather than
+    held until the cache size forces it out. A process that stops reading
+    credentials altogether releases nothing: the cache has no thread of
+    its own. The next read for that identity logs in again.
   </description>
 </property>
 

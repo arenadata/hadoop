@@ -110,6 +110,25 @@ public class TestVaultClientIdentity {
   }
 
   @Test
+  public void testIdentityFollowsTheSettingsTheClientIsBuiltFrom()
+      throws Exception {
+    Configuration other = dedicatedConf();
+    other.set(VaultCredentialProviderConfig.SSL_TRUSTSTORE_LOCATION_KEY,
+        "/etc/security/other.jks");
+
+    assertNotEquals(identity(dedicatedConf()), identity(other));
+  }
+
+  @Test
+  public void testTokenIdentityFollowsTheTokenNotItsSource()
+      throws Exception {
+    Configuration rotated = tokenConf("s.rotated");
+
+    assertNotEquals(identity(tokenConf("s.tenant-a")), identity(rotated));
+    assertEquals(identity(rotated), identity(tokenConf("s.rotated")));
+  }
+
+  @Test
   public void testCurrentUgiIdentityIsPerSession() throws Exception {
     Configuration conf = currentUgiConf();
     UserGroupInformation session = kerberosUser("spark");
