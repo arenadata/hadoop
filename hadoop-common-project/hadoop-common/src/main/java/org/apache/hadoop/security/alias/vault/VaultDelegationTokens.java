@@ -87,12 +87,33 @@ public final class VaultDelegationTokens {
   }
 
   /**
-   * The user whose credentials authenticate to Vault: the current user, or
-   * the real user behind a proxy user.
+   * The one of a caller and its real user that holds a Kerberos login the
+   * process can authenticate with, or null. A UGI made for a remote user
+   * inside a server reports Kerberos without holding a ticket.
    */
-  static UserGroupInformation actualUser() throws IOException {
-    UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
-    return ugi.getRealUser() != null ? ugi.getRealUser() : ugi;
+  static UserGroupInformation kerberosLogin(UserGroupInformation caller) {
+    if (caller.shouldRelogin()) {
+      return caller;
+    }
+    UserGroupInformation real = caller.getRealUser();
+    return real != null && real.shouldRelogin() ? real : null;
+  }
+
+  /**
+   * The one of a caller and its real user whose credentials hold a
+   * delegation token for the server, or null. A proxy login user carries
+   * the tokens of the process itself.
+   */
+  static UserGroupInformation tokenHolder(UserGroupInformation caller,
+      VaultConnectionInfo connInfo, String authMountPath) {
+    if (selectToken(caller.getCredentials(), connInfo, authMountPath)
+        != null) {
+      return caller;
+    }
+    UserGroupInformation real = caller.getRealUser();
+    return real != null
+        && selectToken(real.getCredentials(), connInfo, authMountPath) != null
+        ? real : null;
   }
 
   /**

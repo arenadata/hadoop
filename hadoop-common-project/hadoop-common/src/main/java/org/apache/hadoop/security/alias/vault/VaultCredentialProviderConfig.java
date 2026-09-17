@@ -94,6 +94,17 @@ public final class VaultCredentialProviderConfig {
   public static final String KERBEROS_UGI_MODE_DEFAULT = "dedicated";
   public static final String KERBEROS_UGI_MODE_CURRENT = "current";
 
+  public static final String DELEGATION_TOKEN_ENABLED_KEY =
+      CONFIG_PREFIX + "delegation.token.enabled";
+  public static final boolean DELEGATION_TOKEN_ENABLED_DEFAULT = true;
+
+  public static final String DELEGATION_TOKEN_RENEWABLE_KEY =
+      CONFIG_PREFIX + "delegation.token.renewable";
+  public static final boolean DELEGATION_TOKEN_RENEWABLE_DEFAULT = true;
+
+  public static final String DELEGATION_TOKEN_SERVERS_KEY =
+      CONFIG_PREFIX + "delegation.token.servers";
+
   public static final String SSL_PREFIX = CONFIG_PREFIX + "ssl.";
 
   public static final String SSL_TRUSTSTORE_LOCATION_KEY =
@@ -110,13 +121,117 @@ public final class VaultCredentialProviderConfig {
 
   public static final String CLIENT_CACHE_MAX_SIZE_KEY =
       CONFIG_PREFIX + "client.cache.max.size";
-  public static final int CLIENT_CACHE_MAX_SIZE_DEFAULT = 16;
+  public static final int CLIENT_CACHE_MAX_SIZE_DEFAULT = 256;
+
+  public static final String CLIENT_CACHE_IDLE_MS_KEY =
+      CONFIG_PREFIX + "client.cache.idle.ms";
+  public static final long CLIENT_CACHE_IDLE_MS_DEFAULT = 3600000;
 
   public static final String CACHE_TTL_MS_KEY =
       CONFIG_PREFIX + "cache.ttl.ms";
   public static final long CACHE_TTL_MS_DEFAULT = 600000;
 
+  public static final String CACHE_NEGATIVE_TTL_MS_KEY =
+      CONFIG_PREFIX + "cache.negative.ttl.ms";
+  public static final long CACHE_NEGATIVE_TTL_MS_DEFAULT = 60000;
+
+  public static final String CACHE_MAX_SIZE_KEY =
+      CONFIG_PREFIX + "cache.max.size";
+  public static final int CACHE_MAX_SIZE_DEFAULT = 4096;
+
+  /**
+   * A numeric property. A value that is not a number is an IOException,
+   * the only exception expected while a credential provider is built.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @param defaultValue the value to use when the property is unset
+   * @return the configured value
+   * @throws IOException if the value is not a number
+   */
+  static long number(Configuration conf, String key, long defaultValue)
+      throws IOException {
+    String value = conf.getTrimmed(key);
+    if (value == null || value.isEmpty()) {
+      return defaultValue;
+    }
+    try {
+      return conf.getLong(key, defaultValue);
+    } catch (NumberFormatException e) {
+      throw new IOException(key + " is not a number: " + value, e);
+    }
+  }
+
+  /**
+   * A numeric property that must be greater than zero.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @param defaultValue the value to use when the property is unset
+   * @return the configured value
+   * @throws IOException if the value is not a positive number
+   */
+  static long positiveNumber(Configuration conf, String key,
+      long defaultValue) throws IOException {
+    long value = number(conf, key, defaultValue);
+    if (value <= 0) {
+      throw new IOException(key + " must be greater than zero, but is "
+          + value);
+    }
+    return value;
+  }
+
+  /**
+   * A numeric property that must not be negative.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @param defaultValue the value to use when the property is unset
+   * @return the configured value
+   * @throws IOException if the value is not a number or is negative
+   */
+  static long nonNegativeNumber(Configuration conf, String key,
+      long defaultValue) throws IOException {
+    long value = number(conf, key, defaultValue);
+    if (value < 0) {
+      throw new IOException(key + " must not be negative, but is " + value);
+    }
+    return value;
+  }
+
+  /**
+   * Whether this configuration sets the property itself, rather than
+   * inheriting it from {@code core-default.xml}.
+   *
+   * @param conf the Hadoop configuration
+   * @param key the property
+   * @return true if the value comes from anything but the defaults
+   */
+  static boolean isSetByUser(Configuration conf, String key) {
+    String[] sources = conf.getPropertySources(key);
+    if (sources == null || sources.length == 0) {
+      return false;
+    }
+    for (String source : sources) {
+      if (!source.endsWith("-default.xml")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private VaultCredentialProviderConfig() {
+  }
+
+  /**
+   * The configured auth method, or the default when unset or blank.
+   *
+   * @param conf the Hadoop configuration
+   * @return the auth method name
+   */
+  public static String authMethod(Configuration conf) {
+    String name = conf.getTrimmed(AUTH_METHOD_KEY, AUTH_METHOD_DEFAULT);
+    return name.isEmpty() ? AUTH_METHOD_DEFAULT : name;
   }
 
   /**
@@ -132,19 +247,61 @@ public final class VaultCredentialProviderConfig {
    *
    * @param conf the Hadoop configuration
    * @return the Vault token, or null if not found
+   * @throws IOException if the token cannot be sent as an HTTP header
    */
-  public static String resolveToken(Configuration conf) {
-    String token = conf.get(TOKEN_KEY);
-    if (token != null && !token.isEmpty()) {
-      return token;
+  public static String resolveToken(Configuration conf) throws IOException {
+    String token = conf.getTrimmed(TOKEN_KEY);
+    if (token == null || token.isEmpty()) {
+      token = readSystemdCredential(conf);
     }
-
-    token = readSystemdCredential(conf);
-    if (token != null && !token.isEmpty()) {
-      return token;
+    if (token == null || token.isEmpty()) {
+      token = System.getenv(VAULT_TOKEN_ENV);
     }
+    if (token == null) {
+      return null;
+    }
+    token = token.trim();
+    if (token.isEmpty()) {
+      return null;
+    }
+    checkToken(token);
+    return token;
+  }
 
-    return System.getenv(VAULT_TOKEN_ENV);
+  /**
+   * The token is sent as an HTTP header, which rejects whitespace and
+   * control characters with an exception that quotes the value; reject
+   * them first, without quoting it.
+   */
+  static void checkToken(String token) throws IOException {
+    for (int i = 0; i < token.length(); i++) {
+      char c = token.charAt(i);
+      if (c <= ' ' || c == 0x7f) {
+        throw new IOException(
+            "Vault token contains whitespace or control characters");
+      }
+    }
+  }
+
+  /**
+   * The systemd credential file under the given directory, or null when
+   * there is no directory or no file in it. Package-private for testability.
+   *
+   * @param conf the Hadoop configuration
+   * @param credDir the credentials directory path, or null if not set
+   * @return the credential file, or null if there is none
+   */
+  static File systemdCredentialFile(Configuration conf, String credDir) {
+    if (credDir == null || credDir.isEmpty()) {
+      return null;
+    }
+    File credFile = new File(credDir, conf.getTrimmed(
+        SYSTEMD_CREDENTIAL_NAME_KEY, SYSTEMD_CREDENTIAL_NAME_DEFAULT));
+    if (!credFile.isFile()) {
+      LOG.debug("systemd credential file not found: {}", credFile);
+      return null;
+    }
+    return credFile;
   }
 
   /**
@@ -167,15 +324,8 @@ public final class VaultCredentialProviderConfig {
    * @return the token string, or null if not available
    */
   static String readSystemdCredential(Configuration conf, String credDir) {
-    if (credDir == null || credDir.isEmpty()) {
-      return null;
-    }
-
-    String credName = conf.get(SYSTEMD_CREDENTIAL_NAME_KEY,
-        SYSTEMD_CREDENTIAL_NAME_DEFAULT);
-    File credFile = new File(credDir, credName);
-    if (!credFile.isFile()) {
-      LOG.debug("systemd credential file not found: {}", credFile);
+    File credFile = systemdCredentialFile(conf, credDir);
+    if (credFile == null) {
       return null;
     }
 

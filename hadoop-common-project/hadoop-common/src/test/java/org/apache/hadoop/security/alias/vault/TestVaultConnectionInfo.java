@@ -24,6 +24,7 @@ import java.net.URI;
 import org.junit.Test;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 
 /**
@@ -206,6 +207,56 @@ public class TestVaultConnectionInfo {
         new URI("vault://https@vault.example.com:8200/secret/hadoop"));
     assertEquals("https://vault.example.com:8200/v1/secret/data/hadoop/x",
         info.getApiUrl(info.buildDataPath("x")));
+  }
+
+  @Test
+  public void testApiUrlEncodesEverySegment() throws Exception {
+    VaultConnectionInfo info = new VaultConnectionInfo(
+        new URI("vault://https@vault.example.com:8200/secret/hadoop"));
+    assertEquals("https://vault.example.com:8200/v1/secret/data/hadoop/"
+        + "my%20key%231%3Fx/%D0%BF~a.b_c-d",
+        info.getApiUrl(info.buildDataPath("my key#1?x/\u043f~a.b_c-d")));
+    assertEquals("https://vault.example.com:8200/v1/secret/metadata/hadoop",
+        info.getApiUrl(info.buildMetadataPath()));
+  }
+
+  @Test
+  public void testAliasValidation() throws Exception {
+    VaultConnectionInfo.checkAlias("a/b");
+    VaultConnectionInfo.checkAlias("my.special-key_1");
+    for (String bad : new String[] {"a/../b", "a//b", "a/./b", ".", "..",
+        "a\nb", "/a", "a/", ""}) {
+      intercept(IOException.class, () -> VaultConnectionInfo.checkAlias(bad));
+      assertFalse(bad, VaultConnectionInfo.isValidAlias(bad));
+    }
+    assertFalse(VaultConnectionInfo.isValidAlias(null));
+  }
+
+  @Test
+  public void testIpv6Host() throws Exception {
+    VaultConnectionInfo info = new VaultConnectionInfo(
+        new URI("vault://[::1]:8210/secret/hadoop"));
+    assertEquals("[::1]", info.getHost());
+    assertEquals(8210, info.getPort());
+    assertEquals("https://[::1]:8210", info.getBaseUrl());
+
+    VaultConnectionInfo withProtocol = new VaultConnectionInfo(
+        new URI("vault://http@[::1]/secret/hadoop"));
+    assertEquals("[::1]", withProtocol.getHost());
+    assertEquals(VaultConnectionInfo.DEFAULT_PORT, withProtocol.getPort());
+
+    assertEquals("[::1]", VaultConnectionInfo.fromTokenService(
+        "vault://https@[::1]:8210/auth/kerberos").getHost());
+  }
+
+  @Test
+  public void testInvalidPortIsRejected() throws Exception {
+    intercept(IOException.class, "Invalid Vault port: 82OO",
+        () -> new VaultConnectionInfo(
+            new URI("vault://vault.example.com:82OO/secret")));
+    intercept(IOException.class, "Invalid Vault port",
+        () -> VaultConnectionInfo.fromTokenService(
+            "vault://https@vault.example.com:x/auth/kerberos"));
   }
 
   @Test

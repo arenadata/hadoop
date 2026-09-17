@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.security.alias.vault;
 
+import java.io.File;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -33,12 +35,17 @@ import com.sun.net.httpserver.HttpServer;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -53,6 +60,9 @@ public class TestVaultCredentialProviderIntegration {
   private static final String TEST_TOKEN = "s.integrationtest";
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
+  @Rule
+  public TemporaryFolder tempDir = new TemporaryFolder();
+
   private HttpServer server;
   private int port;
   private Configuration conf;
@@ -66,7 +76,6 @@ public class TestVaultCredentialProviderIntegration {
     server = HttpServer.create(new InetSocketAddress(0), 0);
     port = server.getAddress().getPort();
 
-    // Handle all requests under /v1/secret/
     server.createContext("/v1/secret/", this::handleVaultRequest);
     server.start();
 
@@ -90,6 +99,39 @@ public class TestVaultCredentialProviderIntegration {
       server.stop(0);
     }
     VaultCredentialProvider.clearCaches();
+  }
+
+  /**
+   * Resolving the SSL truststore password goes through the credential
+   * providers, so building an https Vault client re-enters this provider.
+   * It must report that plainly instead of deadlocking on its own cache
+   * load, so the truststore falls back to its default password.
+   */
+  @Test
+  public void testSslPasswordLookupDoesNotRecurse() throws Exception {
+    File trustStore = new File(tempDir.getRoot(), "truststore.jks");
+    KeyStoreTestUtil.createTrustStore(trustStore.getPath(), "changeit",
+        new HashMap<String, java.security.cert.Certificate>());
+    Configuration sslConf = new Configuration(conf);
+    sslConf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "vault://https@localhost:" + port + "/secret/hadoop/creds");
+    sslConf.set("ssl.client.truststore.location", trustStore.getPath());
+    sslConf.setInt(
+        VaultCredentialProviderConfig.CONNECTION_TIMEOUT_MS_KEY, 1000);
+    sslConf.setInt(VaultCredentialProviderConfig.READ_TIMEOUT_MS_KEY, 1000);
+
+    IOException e = intercept(IOException.class,
+        () -> sslConf.getPassword("ssl.password"));
+
+    assertFalse(causes(e), causes(e).contains("Recursive load"));
+  }
+
+  private static String causes(Throwable t) {
+    StringBuilder sb = new StringBuilder();
+    for (Throwable c = t; c != null; c = c.getCause()) {
+      sb.append(c).append('\n');
+    }
+    return sb.toString();
   }
 
   @Test
@@ -194,7 +236,6 @@ public class TestVaultCredentialProviderIntegration {
         return;
       }
 
-      // Strip /v1/secret/ prefix
       String subPath = path.substring("/v1/secret/".length());
 
       if (subPath.startsWith("data/")) {
@@ -221,7 +262,7 @@ public class TestVaultCredentialProviderIntegration {
     if ("GET".equals(method)) {
       String value = store.get(key);
       if (value == null) {
-        sendResponse(exchange, 404, "{\"errors\":[\"not found\"]}");
+        sendResponse(exchange, 404, "{\"errors\":[]}");
       } else {
         Map<String, Object> response = new HashMap<>();
         Map<String, Object> data = new HashMap<>();
@@ -236,9 +277,8 @@ public class TestVaultCredentialProviderIntegration {
           IOUtils.toByteArray(exchange.getRequestBody()),
               StandardCharsets.UTF_8);
       Map<String, Object> request = MAPPER.readValue(body, Map.class);
-      Map<String, String> data = (Map<String, String>) request.get("data");
-      String value = data.get("value");
-      store.put(key, value);
+      Map<String, Object> data = (Map<String, Object>) request.get("data");
+      store.put(key, String.valueOf(data.get("value")));
       sendResponse(exchange, 200, "{\"data\":{\"version\":1}}");
     } else {
       sendResponse(exchange, 405, "{\"errors\":[\"method not allowed\"]}");
@@ -289,7 +329,7 @@ public class TestVaultCredentialProviderIntegration {
           }
         }
         if (keys.isEmpty()) {
-          sendResponse(exchange, 404, "{\"errors\":[\"not found\"]}");
+          sendResponse(exchange, 404, "{\"errors\":[]}");
         } else {
           Map<String, Object> response = new HashMap<>();
           Map<String, Object> data = new HashMap<>();
@@ -298,7 +338,7 @@ public class TestVaultCredentialProviderIntegration {
           sendResponse(exchange, 200, MAPPER.writeValueAsString(response));
         }
       } else {
-        sendResponse(exchange, 404, "{\"errors\":[\"not found\"]}");
+        sendResponse(exchange, 404, "{\"errors\":[]}");
       }
     } else {
       sendResponse(exchange, 405, "{\"errors\":[\"method not allowed\"]}");

@@ -36,8 +36,8 @@ import org.ietf.jgss.Oid;
 
 /**
  * MiniKdc with the principals of a Vault Kerberos setup: the client
- * {@code vault-client}, the renewer {@code yarn} and the Vault service
- * {@code HTTP/localhost}, all in one keytab. Accepts SPNEGO tokens with the
+ * {@code vault-client}, the renewer {@code yarn}, the Vault service
+ * {@code HTTP/localhost} and a few plain users, all in one keytab. Accepts SPNEGO tokens with the
  * service key so a mock Vault can authenticate callers like a real one.
  * UGI relogin is forced on every authentication so the keytab relogin path
  * runs on each login.
@@ -47,6 +47,8 @@ final class VaultKerberosTestFixture {
   static final String CLIENT_PRINCIPAL = "vault-client";
   static final String RENEWER_PRINCIPAL = "yarn";
   static final String SERVER_PRINCIPAL = "HTTP/localhost";
+  /** Plain users of the cluster, for logins as somebody else. */
+  static final String[] USER_PRINCIPALS = {"alice", "bob", "hive", "spark"};
   private static final String NEGOTIATE = "Negotiate ";
 
   private MiniKdc kdc;
@@ -58,7 +60,8 @@ final class VaultKerberosTestFixture {
     kdc.start();
     keytab = new File(workDir, "vault.keytab");
     kdc.createPrincipal(keytab, CLIENT_PRINCIPAL, RENEWER_PRINCIPAL,
-        SERVER_PRINCIPAL);
+        SERVER_PRINCIPAL, USER_PRINCIPALS[0], USER_PRINCIPALS[1],
+        USER_PRINCIPALS[2], USER_PRINCIPALS[3]);
 
     Configuration conf = new Configuration();
     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION,

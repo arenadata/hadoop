@@ -41,36 +41,41 @@ public class VaultDelegationTokenAuth implements VaultAuthMethod {
 
   private final VaultConnectionInfo connInfo;
   private final String preferredMountPath;
+  private final UserGroupInformation owner;
 
   /**
    * @param connInfo the Vault server
    * @param preferredMountPath the configured auth mount path; a token for
    *     another mount of the same server is used when none matches it
+   * @param owner the user whose tokens are presented; logins never take
+   *     the tokens of whichever user happens to be on the calling thread
    */
   public VaultDelegationTokenAuth(VaultConnectionInfo connInfo,
-      String preferredMountPath) {
+      String preferredMountPath, UserGroupInformation owner) {
     this.connInfo = connInfo;
     this.preferredMountPath = preferredMountPath;
+    this.owner = owner;
   }
 
   @Override
   public String authenticate(VaultHttpClient client) throws IOException {
-    UserGroupInformation ugi = VaultDelegationTokens.actualUser();
-    Token<?> token = VaultDelegationTokens.selectToken(ugi.getCredentials(),
+    Token<?> token = VaultDelegationTokens.selectToken(owner.getCredentials(),
         connInfo, preferredMountPath);
     if (token == null) {
-      throw new IOException("User " + ugi.getUserName()
+      throw new IOException("User " + owner.getUserName()
           + " has no Vault delegation token for "
           + connInfo.getServerService());
     }
     String loginUrl = connInfo.getApiUrl(VaultDelegationTokens.authMountPath(
         token.getService().toString()) + "/login");
-    String body = VaultAuthRequests.post(client, loginUrl, null,
+    String action = "Vault delegation token login";
+    String body = client.retrying(action, () -> VaultAuthRequests.post(
+        client, loginUrl, null,
         VaultAuthRequests.json("delegation_token", token.encodeToUrlString()),
-        "Vault delegation token login");
+        action));
     String vaultToken = VaultAuthRequests.clientToken(body, loginUrl);
     LOG.debug("Authenticated to {} with the delegation token of {}",
-        loginUrl, ugi.getUserName());
+        loginUrl, owner.getUserName());
     return vaultToken;
   }
 }

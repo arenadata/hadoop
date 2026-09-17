@@ -454,7 +454,16 @@
   <name>hadoop.security.credential.vault.ssl.truststore.password</name>
   <value></value>
   <description>
-    Password for the Vault SSL truststore.
+    Password for the Vault SSL truststore. Empty skips the integrity
+    check of a JKS store; a PKCS12 store needs its password.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.ssl.truststore.type</name>
+  <value>JKS</value>
+  <description>
+    Type of the Vault SSL truststore: JKS or PKCS12.
   </description>
 </property>
 
@@ -478,7 +487,9 @@
   <name>hadoop.security.credential.vault.retry.count</name>
   <value>3</value>
   <description>
-    Number of retry attempts for failed Vault HTTP requests.
+    Number of retries of a Vault HTTP request after a connection failure,
+    a timeout or a 5xx or 429 response; logins are retried on the same
+    budget. A write that was already sent is not repeated.
   </description>
 </property>
 
@@ -494,8 +505,11 @@
   <name>hadoop.security.credential.vault.kerberos.principal</name>
   <value></value>
   <description>
-    Kerberos principal for Vault authentication. Required when
-    hadoop.security.credential.vault.auth.method is set to kerberos.
+    Kerberos principal the Vault credential provider logs in as with
+    hadoop.security.credential.vault.kerberos.ugi.mode=dedicated. _HOST is
+    expanded to the local host name the way daemon principals expand it.
+    A caller that holds a Vault delegation token and no Kerberos login
+    uses the token instead.
   </description>
 </property>
 
@@ -503,8 +517,8 @@
   <name>hadoop.security.credential.vault.kerberos.keytab</name>
   <value></value>
   <description>
-    Path to the Kerberos keytab for Vault authentication. Required when
-    hadoop.security.credential.vault.auth.method is set to kerberos.
+    Keytab of hadoop.security.credential.vault.kerberos.principal, used
+    with hadoop.security.credential.vault.kerberos.ugi.mode=dedicated.
   </description>
 </property>
 
@@ -532,9 +546,46 @@
   <value>dedicated</value>
   <description>
     UGI mode for Kerberos authentication to Vault.
-    "dedicated" creates a separate UGI from vault-specific principal/keytab.
-    "current" uses the process's existing login UGI (e.g. NameNode's own
-    Kerberos identity), so no separate principal/keytab is needed.
+    "dedicated" logs in from the vault-specific principal and keytab.
+    "current" authenticates as the calling user's Kerberos login, or the
+    real user behind a proxy user; a caller that holds a Vault delegation
+    token and no Kerberos login uses the token; any other caller, such as
+    a remote user inside a server, authenticates as the process login
+    user (e.g. NameNode's own Kerberos identity).
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.delegation.token.enabled</name>
+  <value>true</value>
+  <description>
+    Whether the Vault credential provider issues delegation tokens to
+    jobs under kerberos or delegation auth. The ResourceManager renews
+    every token a job carries when the job is submitted and rejects the
+    job if it cannot, so this needs the ResourceManager to reach Vault
+    over a connection it trusts and to be accepted as renewer by the
+    auth mount.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.delegation.token.renewable</name>
+  <value>true</value>
+  <description>
+    Whether Vault delegation tokens are issued with the ResourceManager
+    as renewer. false issues tokens nobody renews: the ResourceManager
+    skips them and they last their initial lifetime only.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.delegation.token.servers</name>
+  <value></value>
+  <description>
+    Vault servers, as protocol@host:port, whose delegation tokens this
+    host renews and cancels; a token of any other server is refused.
+    Unset, the servers of hadoop.security.credential.provider.path are
+    used, and with neither, tokens of every server are accepted.
   </description>
 </property>
 
@@ -559,12 +610,51 @@
 </property>
 
 <property>
+  <name>hadoop.security.credential.vault.cache.negative.ttl.ms</name>
+  <value>60000</value>
+  <description>
+    Time-to-live in milliseconds for aliases an identity found absent in
+    Vault, so that lookups of aliases held by other providers do not
+    reach Vault on every call; 0 disables it. An alias created through
+    this provider is visible in its JVM at once.
+  </description>
+</property>
+
+<property>
   <name>hadoop.security.credential.vault.client.cache.max.size</name>
-  <value>16</value>
+  <value>256</value>
   <description>
     Maximum number of VaultHttpClient instances cached per JVM.
-    Each unique Vault base URL gets its own client. In most deployments
-    this is 1-2.
+    Each Vault server gets one client per identity that authenticates to
+    it: the configured token, the Kerberos principal, or the session
+    holding a delegation token. A process with one identity needs 1-2
+    entries; one that reads credentials on behalf of many users needs
+    room for all of them, because past the limit every credential read
+    costs a fresh Vault login, and a Kerberos one a KDC round trip too.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.client.cache.idle.ms</name>
+  <value>3600000</value>
+  <description>
+    How long a cached VaultHttpClient is kept after its last use, in
+    milliseconds; 0 keeps it until the cache size evicts it. A client
+    holds an authenticated Vault token and, over https, a truststore
+    reload thread, so the client of a session that is gone is dropped on
+    the first credential read that follows the idle period rather than
+    held until the cache size forces it out. A process that stops reading
+    credentials altogether releases nothing: the cache has no thread of
+    its own. The next read for that identity logs in again.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.credential.vault.cache.max.size</name>
+  <value>4096</value>
+  <description>
+    Maximum number of entries in the credential cache per JVM, one per
+    identity and alias.
   </description>
 </property>
 

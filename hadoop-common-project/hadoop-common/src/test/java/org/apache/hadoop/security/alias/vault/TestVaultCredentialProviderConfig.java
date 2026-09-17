@@ -28,8 +28,12 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Tests for {@link VaultCredentialProviderConfig}, focusing on
@@ -108,12 +112,104 @@ public class TestVaultCredentialProviderConfig {
   }
 
   @Test
+  public void testSystemdCredentialFileIsTheOneThatIsRead() throws Exception {
+    File credDir = tempDir.newFolder("credentials-present");
+    File credFile = new File(credDir, "vault-token");
+    writeFile(credFile, "s.systemd-token-123");
+
+    File resolved = VaultCredentialProviderConfig.systemdCredentialFile(
+        new Configuration(), credDir.getAbsolutePath());
+
+    assertNotNull(resolved);
+    assertEquals(credFile.getAbsolutePath(), resolved.getAbsolutePath());
+  }
+
+  @Test
+  public void testSystemdCredentialFileIsNullWhenTheFileIsMissing()
+      throws Exception {
+    File credDir = tempDir.newFolder("credentials-missing");
+
+    assertNull(VaultCredentialProviderConfig.systemdCredentialFile(
+        new Configuration(), credDir.getAbsolutePath()));
+  }
+
+  @Test
+  public void testNumberReportsGarbageAsAConfigurationError()
+      throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, "1h");
+
+    IOException e = intercept(IOException.class, () ->
+        VaultCredentialProviderConfig.number(conf,
+            VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 1L));
+
+    assertTrue(e.getMessage(), e.getMessage().contains("is not a number"));
+  }
+
+  @Test
+  public void testPositiveNumberRejectsZeroAndBelow() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.setLong(VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, 0);
+
+    intercept(IOException.class, "must be greater than zero", () ->
+        VaultCredentialProviderConfig.positiveNumber(conf,
+            VaultCredentialProviderConfig.CACHE_TTL_MS_KEY, 1L));
+  }
+
+  @Test
+  public void testASettingIsTheUsersOnlyWhenTheUserSetIt() throws Exception {
+    Configuration defaults = new Configuration();
+    Configuration set = new Configuration();
+    set.setInt(VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY, 8);
+
+    assertFalse(VaultCredentialProviderConfig.isSetByUser(defaults,
+        VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY));
+    assertTrue(VaultCredentialProviderConfig.isSetByUser(set,
+        VaultCredentialProviderConfig.CACHE_MAX_SIZE_KEY));
+  }
+
+  @Test
   public void testConfigTokenTakesPriority() throws Exception {
     Configuration conf = new Configuration();
     conf.set(VaultCredentialProviderConfig.TOKEN_KEY, "s.config-token");
 
     String token = VaultCredentialProviderConfig.resolveToken(conf);
     assertEquals("s.config-token", token);
+  }
+
+  @Test
+  public void testNonNegativeNumberRejectsNegative() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.setLong(VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, -1);
+
+    intercept(IOException.class, "must not be negative", () ->
+        VaultCredentialProviderConfig.nonNegativeNumber(conf,
+            VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 1L));
+    assertEquals(0, VaultCredentialProviderConfig.nonNegativeNumber(
+        new Configuration(false),
+        VaultCredentialProviderConfig.CLIENT_CACHE_IDLE_MS_KEY, 0L));
+  }
+
+  @Test
+  public void testTokenIsTrimmed() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.TOKEN_KEY, "\n    hvs.spaced\n  ");
+
+    assertEquals("hvs.spaced",
+        VaultCredentialProviderConfig.resolveToken(conf));
+  }
+
+  @Test
+  public void testTokenWithControlCharactersIsRejectedWithoutQuotingIt()
+      throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(VaultCredentialProviderConfig.TOKEN_KEY, "hvs.first\nhvs.second");
+
+    IOException e = intercept(IOException.class,
+        "whitespace or control characters",
+        () -> VaultCredentialProviderConfig.resolveToken(conf));
+
+    assertFalse(e.getMessage(), e.getMessage().contains("hvs."));
   }
 
   private static void writeFile(File file, String content)

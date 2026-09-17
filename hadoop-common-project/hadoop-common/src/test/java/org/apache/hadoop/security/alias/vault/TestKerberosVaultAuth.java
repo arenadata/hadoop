@@ -64,6 +64,8 @@ public class TestKerberosVaultAuth {
   private volatile String mountedLoginPath = DEFAULT_LOGIN_PATH;
   /** Token the next login issues; the secret handler accepts only it. */
   private volatile String issuedToken = "s.login-1";
+  /** Logins the mock answers with 503 before it accepts one. */
+  private volatile int sealedResponses;
   private final List<String> loginRequests =
       Collections.synchronizedList(new ArrayList<>());
   private final List<String> authenticatedPrincipals =
@@ -103,21 +105,34 @@ public class TestKerberosVaultAuth {
   }
 
   @Test
-  public void testBuildLoginPath() throws Exception {
-    assertEquals("auth/kerberos/login", KerberosVaultAuth.buildLoginPath(
+  public void testMountPath() throws Exception {
+    assertEquals("auth/kerberos", VaultAuthRequests.mountPath(
         VaultCredentialProviderConfig.KERBEROS_LOGIN_PATH_DEFAULT));
-    assertEquals("auth/krb-prod/login",
-        KerberosVaultAuth.buildLoginPath("auth/krb-prod"));
-    assertEquals("auth/krb-prod/login",
-        KerberosVaultAuth.buildLoginPath(" /auth/krb-prod// "));
+    assertEquals("auth/krb-prod",
+        VaultAuthRequests.mountPath("auth/krb-prod"));
+    assertEquals("auth/krb-prod",
+        VaultAuthRequests.mountPath(" /auth/krb-prod// "));
   }
 
   @Test
-  public void testBuildLoginPathRejectsEmptyMount() throws Exception {
+  public void testMountPathRejectsEmptyMount() throws Exception {
     intercept(IOException.class, "mount path is empty",
-        () -> KerberosVaultAuth.buildLoginPath(""));
+        () -> VaultAuthRequests.mountPath(""));
     intercept(IOException.class, "mount path is empty",
-        () -> KerberosVaultAuth.buildLoginPath("/"));
+        () -> VaultAuthRequests.mountPath("/"));
+  }
+
+  @Test
+  public void testLoginIsRetriedWhileVaultIsSealed() throws Exception {
+    sealedResponses = 1;
+
+    VaultHttpClient client = newClient(1);
+
+    assertEquals(Arrays.asList(
+        "POST " + DEFAULT_LOGIN_PATH, "POST " + DEFAULT_LOGIN_PATH),
+        loginRequests);
+    assertEquals(MockVault.SECRET_VALUE, client.readSecret(
+        "secret/data/hadoop/creds/db.password", "value"));
   }
 
   @Test
@@ -181,7 +196,8 @@ public class TestKerberosVaultAuth {
   }
 
   private VaultHttpClient newClient(int retryCount) throws IOException {
-    return new VaultHttpClient(connInfo, new KerberosVaultAuth(conf, connInfo),
+    return new VaultHttpClient(connInfo, new KerberosVaultAuth(conf, connInfo,
+        VaultAuthRequests.mountPath(conf), KRB.loginFromKeytab(CLIENT_PRINCIPAL)),
         5000, 5000, retryCount, 100);
   }
 
@@ -195,6 +211,11 @@ public class TestKerberosVaultAuth {
     loginRequests.add(exchange.getRequestMethod() + " " + path);
     if (!path.equals(mountedLoginPath)) {
       MockVault.sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+      return;
+    }
+    if (sealedResponses > 0) {
+      sealedResponses--;
+      MockVault.sendResponse(exchange, 503, "{\"errors\":[\"Vault is sealed\"]}");
       return;
     }
     try {
