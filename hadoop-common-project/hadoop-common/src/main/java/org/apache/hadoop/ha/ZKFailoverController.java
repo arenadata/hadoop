@@ -375,7 +375,7 @@ public abstract class ZKFailoverController {
     int maxRetryNum = conf.getInt(
         CommonConfigurationKeys.HA_FC_ELECTOR_ZK_OP_RETRIES_KEY,
         CommonConfigurationKeys.HA_FC_ELECTOR_ZK_OP_RETRIES_DEFAULT);
-    TruststoreKeystore truststoreKeystore = isSSLEnabled() ? new TruststoreKeystore(conf) : null;
+    TruststoreKeystore truststoreKeystore = isSSLEnabled() ? new TruststoreKeystore(c) : null;
     elector = new ActiveStandbyElector(zkQuorum,
         zkTimeout, getParentZnode(), zkAcls, zkAuths,
         new ElectorCallbacks(), maxRetryNum, truststoreKeystore);

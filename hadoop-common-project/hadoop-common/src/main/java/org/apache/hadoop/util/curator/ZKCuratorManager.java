@@ -176,15 +176,17 @@ public final class ZKCuratorManager {
     for (ZKUtil.ZKAuthInfo zkAuth : zkAuths) {
       authInfos.add(new AuthInfo(zkAuth.getScheme(), zkAuth.getAuth()));
     }
+    TruststoreKeystore truststoreKeystore = null;
     if (sslEnabled) {
-      validateSslConfiguration(conf);
+      truststoreKeystore = new TruststoreKeystore(conf);
+      validateSslConfiguration(truststoreKeystore);
     }
     CuratorFramework client = CuratorFrameworkFactory.builder().connectString(zkHostPort)
         .zookeeperFactory(
             new HadoopZookeeperFactory(conf.get(CommonConfigurationKeys.ZK_SERVER_PRINCIPAL),
                 conf.get(CommonConfigurationKeys.ZK_KERBEROS_PRINCIPAL),
                 conf.get(CommonConfigurationKeys.ZK_KERBEROS_KEYTAB), sslEnabled,
-                new TruststoreKeystore(conf))).zkClientConfig(zkClientConfig)
+                truststoreKeystore)).zkClientConfig(zkClientConfig)
         .sessionTimeoutMs(zkSessionTimeout).retryPolicy(retryPolicy)
         .authorization(authInfos).build();
     client.start();
@@ -193,26 +195,26 @@ public final class ZKCuratorManager {
   }
   /* Check on SSL/TLS client connection requirements to emit the name of the
    configuration missing. It improves supportability. */
-  private void validateSslConfiguration(Configuration config) throws IOException {
-    if (StringUtils.isEmpty(config.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION))) {
+  private void validateSslConfiguration(TruststoreKeystore truststoreKeystore) throws IOException {
+    if (StringUtils.isEmpty(truststoreKeystore.getKeystoreLocation())) {
       throw new IOException(
           "The SSL encryption is enabled for the component's ZooKeeper client connection, "
               + "however the " + CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION + " " +
               "parameter is empty.");
     }
-    if (StringUtils.isEmpty(config.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD))) {
+    if (StringUtils.isEmpty(truststoreKeystore.getKeystorePassword())) {
       throw new IOException(
           "The SSL encryption is enabled for the component's " + "ZooKeeper client connection, "
               + "however the " + CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD + " " +
               "parameter is empty.");
     }
-    if (StringUtils.isEmpty(config.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION))) {
+    if (StringUtils.isEmpty(truststoreKeystore.getTruststoreLocation())) {
       throw new IOException(
           "The SSL encryption is enabled for the component's ZooKeeper client connection, "
               + "however the " + CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION + " " +
               "parameter is empty.");
     }
-    if (StringUtils.isEmpty(config.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD))) {
+    if (StringUtils.isEmpty(truststoreKeystore.getTruststorePassword())) {
       throw new IOException(
           "The SSL encryption is enabled for the component's ZooKeeper client connection, "
               + "however the " + CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD + "  " +
@@ -519,8 +521,7 @@ public final class ZKCuratorManager {
      */
     public HadoopZookeeperFactory(String zkPrincipal, String kerberosPrincipal,
         String kerberosKeytab) {
-      this(zkPrincipal, kerberosPrincipal, kerberosKeytab, false,
-          new TruststoreKeystore(new Configuration()));
+      this(zkPrincipal, kerberosPrincipal, kerberosKeytab, false, null);
     }
 
     /**

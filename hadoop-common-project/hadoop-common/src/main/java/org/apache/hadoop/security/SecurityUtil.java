@@ -862,14 +862,21 @@ public final class SecurityUtil {
     /**
      * Configuration for the ZooKeeper connection when SSL/TLS is enabled.
      * When a value is not configured, ensure that empty string is set instead of null.
+     * Passwords are resolved through the configured credential providers.
      *
      * @param conf ZooKeeper Client configuration
+     * @throws IOException if a credential provider cannot be read
      */
-    public TruststoreKeystore(Configuration conf) {
+    public TruststoreKeystore(Configuration conf) throws IOException {
       keystoreLocation = conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, "");
-      keystorePassword = conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD, "");
+      keystorePassword = getPassword(conf, CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD);
       truststoreLocation = conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, "");
-      truststorePassword = conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD, "");
+      truststorePassword = getPassword(conf, CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD);
+    }
+
+    private static String getPassword(Configuration conf, String name) throws IOException {
+      char[] password = conf.getPassword(name);
+      return password == null ? "" : String.valueOf(password);
     }
 
     public String getKeystoreLocation() {

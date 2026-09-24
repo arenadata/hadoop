@@ -41,6 +41,7 @@ import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
@@ -639,5 +640,17 @@ public class TestZKDelegationTokenSecretManager {
     Assert.assertNotNull(stat);
 
     curatorFramework.close();
+  }
+
+  @Test
+  public void testSslPasswordsResolvedOnlyWithSsl() throws Exception {
+    Configuration conf = getSecretConf(zkServer.getConnectString());
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH, "unknown:///");
+    ZKDelegationTokenSecretManager.createCuratorClient(conf, "ns").close();
+
+    conf.setBoolean(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_ENABLED, true);
+    LambdaTestUtils.intercept(RuntimeException.class,
+        "Configuration problem with provider path",
+        () -> ZKDelegationTokenSecretManager.createCuratorClient(conf, "ns"));
   }
 }

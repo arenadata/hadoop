@@ -203,19 +203,25 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
               conf.getBoolean(ZK_DTSM_ZK_SSL_ENABLED, false));
       String keystoreLocation = conf.get(ZK_DTSM_ZK_SSL_KEYSTORE_LOCATION,
           conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, ""));
-      String keystorePassword = conf.get(ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
-          conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD, ""));
       String truststoreLocation = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_LOCATION,
           conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, ""));
-      String truststorePassword = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD,
-          conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD, ""));
+      TruststoreKeystore truststoreKeystore = null;
+      String keystorePassword = "";
+      String truststorePassword = "";
+      if (isSSLEnabled) {
+        truststoreKeystore = new TruststoreKeystore(conf);
+        keystorePassword = getSslPassword(conf, ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
+            truststoreKeystore.getKeystorePassword());
+        truststorePassword = getSslPassword(conf, ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD,
+            truststoreKeystore.getTruststorePassword());
+      }
 
       ZookeeperFactory zkFactory = new HadoopZookeeperFactory(
           conf.get(ZK_DTSM_ZK_KERBEROS_SERVER_PRINCIPAL),
           conf.get(ZK_DTSM_ZK_KERBEROS_PRINCIPAL),
           conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB),
           isSSLEnabled,
-          new TruststoreKeystore(conf));
+          truststoreKeystore);
 
 
       return ZookeeperClient.configure()
@@ -238,6 +244,12 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
     } catch (Exception ex) {
       throw new RuntimeException("Could not Load ZK acls or auth: " + ex, ex);
     }
+  }
+
+  private static String getSslPassword(Configuration conf, String name,
+      String defaultPassword) throws IOException {
+    char[] password = conf.getPassword(name);
+    return password == null ? defaultPassword : String.valueOf(password);
   }
 
   @Override
