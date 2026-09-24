@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.security.token.delegation;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -39,9 +40,13 @@ import org.apache.curator.framework.api.ProtectACLCreateModeStatPathAndBytesable
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.alias.JavaKeyStoreProvider;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
@@ -50,6 +55,8 @@ import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.client.ZKClientConfig;
+import org.apache.zookeeper.common.ClientX509Util;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Id;
 import org.apache.zookeeper.data.Stat;
@@ -650,7 +657,53 @@ public class TestZKDelegationTokenSecretManager {
 
     conf.setBoolean(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_ENABLED, true);
     LambdaTestUtils.intercept(RuntimeException.class,
+        "The keystore location parameter is empty",
+        () -> ZKDelegationTokenSecretManager.createCuratorClient(conf, "ns"));
+
+    conf.set(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_KEYSTORE_LOCATION, "/keystore.jks");
+    conf.set(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_TRUSTSTORE_LOCATION, "/truststore.jks");
+    LambdaTestUtils.intercept(RuntimeException.class,
         "Configuration problem with provider path",
         () -> ZKDelegationTokenSecretManager.createCuratorClient(conf, "ns"));
+  }
+
+  @Test
+  public void testSslSettingsPreferSecretManagerKeys() throws Exception {
+    Configuration conf = getSecretConf(zkServer.getConnectString());
+    conf.setBoolean(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_ENABLED, true);
+    conf.set(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, "/common-keystore.jks");
+    conf.set(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD, "commonKeystorePassword");
+    conf.set(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, "/common-truststore.jks");
+    conf.set(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_KEYSTORE_LOCATION,
+        "/dtsm-keystore.jks");
+    File jks = new File(GenericTestUtils.getTestDir(), "zk-dtsm-ssl.jceks");
+    jks.delete();
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        JavaKeyStoreProvider.SCHEME_NAME + "://file" + new Path(jks.getAbsolutePath()).toUri());
+    CredentialProvider provider = CredentialProviderFactory.getProviders(conf).get(0);
+    provider.createCredentialEntry(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
+        "dtsmKeystorePassword".toCharArray());
+    provider.createCredentialEntry(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD,
+        "commonTruststorePassword".toCharArray());
+    provider.flush();
+
+    CuratorFramework client = ZKDelegationTokenSecretManager.createCuratorClient(conf, "ns");
+    try {
+      client.start();
+      ZKClientConfig zkClientConfig =
+          client.getZookeeperClient().getZooKeeper().getClientConfig();
+      try (ClientX509Util x509Util = new ClientX509Util()) {
+        Assert.assertEquals("/dtsm-keystore.jks",
+            zkClientConfig.getProperty(x509Util.getSslKeystoreLocationProperty()));
+        Assert.assertEquals("dtsmKeystorePassword",
+            zkClientConfig.getProperty(x509Util.getSslKeystorePasswdProperty()));
+        Assert.assertEquals("/common-truststore.jks",
+            zkClientConfig.getProperty(x509Util.getSslTruststoreLocationProperty()));
+        Assert.assertEquals("commonTruststorePassword",
+            zkClientConfig.getProperty(x509Util.getSslTruststorePasswdProperty()));
+      }
+    } finally {
+      client.close();
+    }
   }
 }

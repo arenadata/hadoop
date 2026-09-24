@@ -43,7 +43,6 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.security.SecurityUtil.TruststoreKeystore;
 import org.apache.hadoop.security.authentication.util.ZookeeperClient;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenManager;
@@ -205,23 +204,22 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
           conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, ""));
       String truststoreLocation = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_LOCATION,
           conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, ""));
-      TruststoreKeystore truststoreKeystore = null;
       String keystorePassword = "";
       String truststorePassword = "";
-      if (isSSLEnabled) {
-        truststoreKeystore = new TruststoreKeystore(conf);
+      // A missing store is reported by ZookeeperClient; no provider error may mask it.
+      if (isSSLEnabled && !keystoreLocation.isEmpty() && !truststoreLocation.isEmpty()) {
         keystorePassword = getSslPassword(conf, ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
-            truststoreKeystore.getKeystorePassword());
+            CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD);
         truststorePassword = getSslPassword(conf, ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD,
-            truststoreKeystore.getTruststorePassword());
+            CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD);
       }
 
+      // SSL is set up by ZookeeperClient below; an SSL-enabled factory would
+      // overwrite it with the hadoop.zk.ssl.* values.
       ZookeeperFactory zkFactory = new HadoopZookeeperFactory(
           conf.get(ZK_DTSM_ZK_KERBEROS_SERVER_PRINCIPAL),
           conf.get(ZK_DTSM_ZK_KERBEROS_PRINCIPAL),
-          conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB),
-          isSSLEnabled,
-          truststoreKeystore);
+          conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB));
 
 
       return ZookeeperClient.configure()
@@ -247,9 +245,12 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
   }
 
   private static String getSslPassword(Configuration conf, String name,
-      String defaultPassword) throws IOException {
+      String fallbackName) throws IOException {
     char[] password = conf.getPassword(name);
-    return password == null ? defaultPassword : String.valueOf(password);
+    if (password == null) {
+      password = conf.getPassword(fallbackName);
+    }
+    return password == null ? "" : String.valueOf(password);
   }
 
   @Override
