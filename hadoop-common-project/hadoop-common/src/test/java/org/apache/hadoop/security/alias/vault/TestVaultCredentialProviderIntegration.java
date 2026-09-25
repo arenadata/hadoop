@@ -26,7 +26,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.io.IOUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,6 +44,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static org.apache.hadoop.test.LambdaTestUtils.eventually;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -71,12 +74,20 @@ public class TestVaultCredentialProviderIntegration {
   private final ConcurrentHashMap<String, String> store =
       new ConcurrentHashMap<>();
 
+  /** Store keys the policy of the test token denies reading. */
+  private final Set<String> denied = ConcurrentHashMap.newKeySet();
+
+  /** Reads of secret data, denied ones included. */
+  private final AtomicInteger secretReads = new AtomicInteger();
+
   @Before
   public void setUp() throws Exception {
     server = HttpServer.create(new InetSocketAddress(0), 0);
     port = server.getAddress().getPort();
 
     server.createContext("/v1/secret/", this::handleVaultRequest);
+    server.createContext(MockVault.TOKEN_LOOKUP_PATH,
+        exchange -> MockVault.handleTokenLookup(exchange, TEST_TOKEN::equals));
     server.start();
 
     VaultCredentialProvider.clearCaches();
@@ -200,6 +211,61 @@ public class TestVaultCredentialProviderIntegration {
   }
 
   @Test
+  public void testDeniedPasswordFallsBackToTheConfiguration()
+      throws Exception {
+    store.put("hadoop/creds/db.password", "fromVault");
+    denied.add("hadoop/creds/db.password");
+    conf.set("db.password", "fromXml");
+
+    assertArrayEquals("fromXml".toCharArray(),
+        conf.getPassword("db.password"));
+
+    conf.setBoolean(CredentialProvider.CLEAR_TEXT_FALLBACK, false);
+    assertNull(conf.getPassword("db.password"));
+  }
+
+  @Test
+  public void testDeniedAliasCannotBeListedCreatedOrDeleted()
+      throws Exception {
+    denied.add("hadoop/creds");
+    denied.add("hadoop/creds/db.password");
+    CredentialProvider provider =
+        CredentialProviderFactory.getProviders(conf).get(0);
+
+    intercept(IOException.class, "status 403",
+        () -> provider.getAliases());
+    intercept(IOException.class, "status 403",
+        () -> provider.createCredentialEntry("db.password",
+            "pw".toCharArray()));
+    assertNull(store.get("hadoop/creds/db.password"));
+    intercept(IOException.class, "status 403",
+        () -> provider.deleteCredentialEntry("db.password"));
+  }
+
+  /**
+   * A denial is cached like an absent alias, and a policy granted later is
+   * read once that entry expires.
+   */
+  @Test
+  public void testGrantedPolicyIsReadOnceTheCachedDenialExpires()
+      throws Exception {
+    conf.setBoolean(VaultCredentialProviderConfig.CACHE_ENABLED_KEY, true);
+    conf.setLong(VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_KEY,
+        1000);
+    store.put("hadoop/creds/db.password", "fromVault");
+    denied.add("hadoop/creds/db.password");
+
+    assertNull(conf.getPassword("db.password"));
+    denied.clear();
+    assertNull(conf.getPassword("db.password"));
+    assertEquals(1, secretReads.get());
+
+    eventually(5000, 20, () -> assertArrayEquals("fromVault".toCharArray(),
+        conf.getPassword("db.password")));
+    assertEquals(2, secretReads.get());
+  }
+
+  @Test
   public void testMultipleCredentials() throws Exception {
     List<CredentialProvider> providers =
         CredentialProviderFactory.getProviders(conf);
@@ -237,6 +303,14 @@ public class TestVaultCredentialProviderIntegration {
       }
 
       String subPath = path.substring("/v1/secret/".length());
+      if ("GET".equals(method) && subPath.startsWith("data/")) {
+        secretReads.incrementAndGet();
+      }
+      if ("GET".equals(method)
+          && denied.contains(subPath.substring(subPath.indexOf('/') + 1))) {
+        sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+        return;
+      }
 
       if (subPath.startsWith("data/")) {
         String key = subPath.substring("data/".length());

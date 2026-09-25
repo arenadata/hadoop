@@ -614,9 +614,10 @@
   <value>60000</value>
   <description>
     Time-to-live in milliseconds for aliases an identity found absent in
-    Vault, so that lookups of aliases held by other providers do not
-    reach Vault on every call; 0 disables it. An alias created through
-    this provider is visible in its JVM at once.
+    Vault or that the Vault policy denies it, so that lookups of aliases
+    held by other providers do not reach Vault on every call; 0 disables
+    it. An alias created through this provider is visible in its JVM at
+    once.
   </description>
 </property>
 

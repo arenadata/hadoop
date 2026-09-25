@@ -77,6 +77,11 @@ public class KerberosVaultAuth implements VaultAuthMethod {
     return vaultToken;
   }
 
+  @Override
+  public String toString() {
+    return vaultUgi.getUserName();
+  }
+
   /**
    * Obtain a delegation token owned by the authenticated principal.
    *

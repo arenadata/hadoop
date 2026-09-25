@@ -88,6 +88,8 @@ public class TestKerberosVaultAuth {
     server.createContext("/v1/auth/", this::handleLogin);
     server.createContext(MockVault.SECRET_PATH,
         exchange -> MockVault.handleSecret(exchange, issuedToken::equals));
+    server.createContext(MockVault.TOKEN_LOOKUP_PATH,
+        exchange -> MockVault.handleTokenLookup(exchange, issuedToken::equals));
     server.start();
 
     connInfo = new VaultConnectionInfo(new URI(

@@ -35,6 +35,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -56,7 +57,9 @@ import org.slf4j.LoggerFactory;
  * HTTP client of the Vault/OpenBao KV v2 API over {@link HttpURLConnection}.
  * Transport failures and 5xx or 429 responses are retried at a fixed
  * interval, except for a request Vault may already have applied; a 401 or
- * 403 gets one re-authentication.
+ * 403 gets one re-authentication. A secret read that Vault refuses to a
+ * token it still accepts is denied by policy and reads as absent; a token
+ * older than the negative cache TTL gets a fresh login first.
  */
 @InterfaceAudience.Private
 public class VaultHttpClient implements Closeable {
@@ -79,8 +82,14 @@ public class VaultHttpClient implements Closeable {
   private final AtomicInteger requestsInFlight = new AtomicInteger();
   private final AtomicBoolean destroyed = new AtomicBoolean();
   private final Object loginLock = new Object();
+  /**
+   * Age from which a token refused a secret read gets a fresh login before
+   * the refusal counts as a policy denial: policies bound at login change
+   * only with a new token.
+   */
+  private final long refreshAfterNanos;
   private volatile boolean closeRequested;
-  private volatile String clientToken;
+  private volatile Login login;
 
   /**
    * Create a new VaultHttpClient.
@@ -120,6 +129,10 @@ public class VaultHttpClient implements Closeable {
     this.retryIntervalMs = setting(conf,
         VaultCredentialProviderConfig.RETRY_INTERVAL_MS_KEY,
         VaultCredentialProviderConfig.RETRY_INTERVAL_MS_DEFAULT);
+    this.refreshAfterNanos = TimeUnit.MILLISECONDS.toNanos(
+        VaultCredentialProviderConfig.nonNegativeNumber(conf,
+            VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_KEY,
+            VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_DEFAULT));
 
     if ("https".equalsIgnoreCase(connInfo.getProtocol())) {
       this.sslFactory = createSslFactory(conf);
@@ -130,7 +143,8 @@ public class VaultHttpClient implements Closeable {
     }
 
     try {
-      this.clientToken = authenticate ? authMethod.authenticate(this) : null;
+      this.login = authenticate ? new Login(authMethod.authenticate(this))
+          : null;
     } catch (IOException | RuntimeException e) {
       close();
       throw e;
@@ -146,9 +160,11 @@ public class VaultHttpClient implements Closeable {
     this.readTimeoutMs = readTimeoutMs;
     this.retryCount = retryCount;
     this.retryIntervalMs = retryIntervalMs;
+    this.refreshAfterNanos = TimeUnit.MILLISECONDS.toNanos(
+        VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_DEFAULT);
     this.sslFactory = null;
     this.sslSocketFactory = null;
-    this.clientToken = authMethod.authenticate(this);
+    this.login = new Login(authMethod.authenticate(this));
   }
 
   private static int setting(Configuration conf, String key,
@@ -229,12 +245,13 @@ public class VaultHttpClient implements Closeable {
    *
    * @param dataPath the KV v2 data path
    * @param secretKey the key within the secret's data map
-   * @return the field, or null if the secret or the field does not exist
+   * @return the field, or null if the secret or the field does not exist,
+   *     or the policy of the token denies reading the secret
    * @throws IOException if the request fails or the field is not a scalar
    */
   public String readSecret(String dataPath, String secretKey)
       throws IOException {
-    Secret secret = readSecretFields(dataPath);
+    Secret secret = readSecretFields(dataPath, true);
     Object value = secret == null ? null : secret.getFields().get(secretKey);
     if (value == null) {
       return null;
@@ -250,7 +267,9 @@ public class VaultHttpClient implements Closeable {
   }
 
   /**
-   * Read every field of a secret and the version they belong to.
+   * Read every field of a secret and the version they belong to. A read
+   * the policy denies fails here, so a write or a delete that reads first
+   * reports the denial.
    *
    * @param dataPath the KV v2 data path
    * @return the secret, or null if it does not exist; a secret whose
@@ -258,10 +277,20 @@ public class VaultHttpClient implements Closeable {
    * @throws IOException if the request fails
    */
   Secret readSecretFields(String dataPath) throws IOException {
+    return readSecretFields(dataPath, false);
+  }
+
+  private Secret readSecretFields(String dataPath, boolean allowDenied)
+      throws IOException {
     Response response = executeWithRetry("GET",
-        connInfo.getApiUrl(dataPath), null, true, true);
+        connInfo.getApiUrl(dataPath), null, true, true, allowDenied);
     if (response.getStatus() == HttpURLConnection.HTTP_NOT_FOUND) {
       return notFound(response.getBody());
+    }
+    if (isRefusal(response.getStatus())) {
+      LOG.debug("The Vault policy denies {} reading {}; treating it as "
+          + "absent", authMethod, dataPath);
+      return null;
     }
 
     VaultResponse.KvRead read = MAPPER.readValue(response.getBody(),
@@ -329,7 +358,8 @@ public class VaultHttpClient implements Closeable {
    */
   public List<String> listSecrets(String metadataPath) throws IOException {
     Response response = executeWithRetry("GET",
-        connInfo.getApiUrl(metadataPath) + "?list=true", null, true, true);
+        connInfo.getApiUrl(metadataPath) + "?list=true", null, true, true,
+        false);
     if (response.getStatus() == HttpURLConnection.HTTP_NOT_FOUND) {
       notFound(response.getBody());
       return Collections.emptyList();
@@ -363,7 +393,7 @@ public class VaultHttpClient implements Closeable {
     body.put("options", options);
 
     executeWithRetry("POST", connInfo.getApiUrl(dataPath),
-        MAPPER.writeValueAsString(body), false, false);
+        MAPPER.writeValueAsString(body), false, false, false);
   }
 
   /**
@@ -374,19 +404,24 @@ public class VaultHttpClient implements Closeable {
    */
   public void deleteSecret(String metadataPath) throws IOException {
     executeWithRetry("DELETE", connInfo.getApiUrl(metadataPath), null, true,
-        false);
+        false, false);
   }
 
+  /**
+   * With {@code allowDenied}, a 401 or 403 to a token Vault still accepts
+   * is returned rather than thrown.
+   */
   private Response executeWithRetry(String method, String url,
-      String jsonBody, boolean idempotent, boolean allowNotFound)
-      throws IOException {
+      String jsonBody, boolean idempotent, boolean allowNotFound,
+      boolean allowDenied) throws IOException {
     if (authMethod == null) {
       throw new IOException("Vault client for " + connInfo.getBaseUrl()
           + " has no auth method");
     }
     requestsInFlight.incrementAndGet();
     try {
-      return execute(method, url, jsonBody, idempotent, allowNotFound);
+      return execute(method, url, jsonBody, idempotent, allowNotFound,
+          allowDenied);
     } finally {
       requestsInFlight.decrementAndGet();
       destroyIfIdle();
@@ -394,13 +429,15 @@ public class VaultHttpClient implements Closeable {
   }
 
   private Response execute(String method, String url, String jsonBody,
-      boolean idempotent, boolean allowNotFound) throws IOException {
+      boolean idempotent, boolean allowNotFound, boolean allowDenied)
+      throws IOException {
     String action = "Vault request " + method + " " + url;
     boolean reauthenticated = false;
     IOException lastFailure = null;
     int attempt = 0;
     while (true) {
-      String token = clientToken;
+      Login current = login;
+      String token = current.token;
       Response response;
       try {
         response = send(method, url, token, jsonBody, idempotent);
@@ -421,15 +458,24 @@ public class VaultHttpClient implements Closeable {
             || (status == HttpURLConnection.HTTP_NOT_FOUND && allowNotFound)) {
           return response;
         }
-        if (status == HttpURLConnection.HTTP_UNAUTHORIZED
-            || status == HttpURLConnection.HTTP_FORBIDDEN) {
+        if (isRefusal(status)) {
+          boolean denied = allowDenied && isAccepted(token);
+          if (denied && (reauthenticated || !isStale(current))) {
+            return response;
+          }
           if (reauthenticated) {
             throw response.failure();
           }
           reauthenticated = true;
           LOG.debug("{} answered {}, re-authenticating", action, status);
-          reauthenticate(token);
-          continue;
+          // A login that hands back the same token cannot change the answer.
+          if (!reauthenticate(current).token.equals(token)) {
+            continue;
+          }
+          if (denied) {
+            return response;
+          }
+          throw response.failure();
         }
         RequestFailedException failure = response.failure();
         if (!failure.isTransient()) {
@@ -449,15 +495,62 @@ public class VaultHttpClient implements Closeable {
     }
   }
 
+  private static boolean isRefusal(int status) {
+    return status == HttpURLConnection.HTTP_UNAUTHORIZED
+        || status == HttpURLConnection.HTTP_FORBIDDEN;
+  }
+
   /**
-   * Log in again, unless another thread already replaced the token that
-   * was refused.
+   * Whether Vault still accepts the token. A token whose policy does not
+   * grant {@code auth/token/lookup-self} counts as refused; a busy or
+   * unreachable Vault is retried, not taken for a refusal.
    */
-  private void reauthenticate(String refusedToken) throws IOException {
-    synchronized (loginLock) {
-      if (clientToken == refusedToken) {
-        clientToken = authMethod.authenticate(this);
+  private boolean isAccepted(String token) throws IOException {
+    String url = connInfo.getApiUrl("auth/token/lookup-self");
+    return retrying("Vault token lookup", () -> {
+      Response response = send("GET", url, token, null, true);
+      if (response.getStatus() == HttpURLConnection.HTTP_OK) {
+        return true;
       }
+      RequestFailedException failure = response.failure();
+      if (failure.isTransient()) {
+        throw failure;
+      }
+      return false;
+    });
+  }
+
+  /**
+   * Whether a fresh login may bring policies the token lacks: it is older
+   * than the refresh age, or another thread has already replaced it.
+   */
+  private boolean isStale(Login current) {
+    return current != login
+        || System.nanoTime() - current.nanos >= refreshAfterNanos;
+  }
+
+  /**
+   * Log in again, unless another thread already replaced the login whose
+   * token was refused.
+   *
+   * @return the login now in use
+   */
+  private Login reauthenticate(Login refused) throws IOException {
+    synchronized (loginLock) {
+      if (login == refused) {
+        login = new Login(authMethod.authenticate(this));
+      }
+      return login;
+    }
+  }
+
+  /** A token and when this client obtained it. */
+  private static final class Login {
+    private final String token;
+    private final long nanos = System.nanoTime();
+
+    Login(String token) {
+      this.token = token;
     }
   }
 

@@ -52,4 +52,9 @@ public class TokenVaultAuth implements VaultAuthMethod {
     }
     return token;
   }
+
+  @Override
+  public String toString() {
+    return "the static Vault token";
+  }
 }
