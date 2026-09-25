@@ -33,6 +33,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -170,6 +171,28 @@ public class TestVaultHttpClient {
 
     String value = client.readSecret("secret/data/hadoop/db.password", "value");
     assertEquals("p@ssw0rd", value);
+  }
+
+  @Test
+  public void testRequestsCarryTheVaultRequestHeader() throws Exception {
+    List<String> headers = new CopyOnWriteArrayList<>();
+    server.createContext("/v1/secret/data/hadoop/db.password",
+        exchange -> {
+          headers.add(exchange.getRequestHeaders().getFirst("X-Vault-Request"));
+          sendResponse(exchange, 200,
+              "{\"data\":{\"data\":{\"value\":\"p@ssw0rd\"}}}");
+        });
+    server.createContext("/v1/auth/test/login",
+        exchange -> {
+          headers.add(exchange.getRequestHeaders().getFirst("X-Vault-Request"));
+          sendResponse(exchange, 200, "{}");
+        });
+
+    client.readSecret("secret/data/hadoop/db.password", "value");
+    VaultAuthRequests.post(client,
+        "http://localhost:" + port + "/v1/auth/test/login", null, "{}",
+        "Vault test login");
+    assertEquals(Arrays.asList("true", "true"), headers);
   }
 
   @Test

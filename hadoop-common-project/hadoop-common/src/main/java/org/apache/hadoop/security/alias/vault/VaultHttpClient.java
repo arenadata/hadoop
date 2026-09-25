@@ -68,6 +68,7 @@ public class VaultHttpClient implements Closeable {
       LoggerFactory.getLogger(VaultHttpClient.class);
 
   private static final String VAULT_TOKEN_HEADER = "X-Vault-Token";
+  private static final String VAULT_REQUEST_HEADER = "X-Vault-Request";
   private static final String CONTENT_TYPE_JSON = "application/json";
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -649,6 +650,9 @@ public class VaultHttpClient implements Closeable {
     conn.setConnectTimeout(connectTimeoutMs);
     conn.setReadTimeout(readTimeoutMs);
     conn.setUseCaches(false);
+    // Vault Agent and Proxy refuse requests without it when
+    // require_request_header is set.
+    conn.setRequestProperty(VAULT_REQUEST_HEADER, "true");
 
     if (sslSocketFactory != null && conn instanceof HttpsURLConnection) {
       HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
