@@ -19,6 +19,7 @@
 package org.apache.hadoop.security.alias.vault;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -31,7 +32,8 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Kerberos/SPNEGO client of the Vault Kerberos auth backend: login, and
- * the delegation token operations of the authenticated principal.
+ * the delegation token operations of the authenticated principal and of
+ * the users it impersonates.
  *
  * <p>The UGI that logs in is chosen by {@link VaultClientIdentity}: the
  * configured principal and keytab with {@code ugi.mode=dedicated}, the
@@ -83,26 +85,94 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   }
 
   /**
-   * Obtain a delegation token owned by the authenticated principal.
+   * Obtain a delegation token owned by the authenticated principal or, with
+   * {@code doas}, by the user it names, the authenticated principal being
+   * its real user.
    *
    * @param client the client to send the request through
    * @param renewer the principal allowed to renew the token, or null for
    *     a token nobody renews; see {@link VaultDelegationTokens#renewerName}
+   * @param doas the user to impersonate, or null
    * @return the token, with the service of this server and auth mount
-   * @throws IOException if Vault refuses or the response is malformed
+   * @throws ImpersonationRefusedException if Vault refuses a token on
+   *     behalf of {@code doas} or does not support {@code doas}
+   * @throws IOException if Vault refuses, the response is malformed or the
+   *     token is not owned by the user asked for
    */
   Token<VaultDelegationTokenIdentifier> getDelegationToken(
-      VaultHttpClient client, String renewer) throws IOException {
+      VaultHttpClient client, String renewer, String doas)
+      throws IOException {
     String service = connInfo.getTokenService(mountPath);
     String url = delegationUrl("token");
-    String body = VaultAuthRequests.postWithSpnego(client, vaultUgi,
-        servicePrincipal, url,
-        VaultAuthRequests.json("renewer",
-            VaultDelegationTokens.renewerName(renewer, ownerRealm()),
-            "service", service),
-        "Vault delegation token request");
-    return VaultDelegationTokens.decode(VaultAuthRequests.parse(body, url)
-        .path("data").path("token").asText(null), service, url);
+    String body;
+    try {
+      body = VaultAuthRequests.postWithSpnego(client, vaultUgi,
+          servicePrincipal, url,
+          VaultAuthRequests.json("renewer",
+              VaultDelegationTokens.renewerName(renewer, loginRealm()),
+              "service", service, "doas", doas),
+          "Vault delegation token request");
+    } catch (VaultHttpClient.RequestFailedException e) {
+      if (doas == null
+          || e.getStatus() != HttpURLConnection.HTTP_FORBIDDEN) {
+        throw e;
+      }
+      throw new ImpersonationRefusedException("Vault refused the token "
+          + "request of " + vaultUgi.getUserName() + ": " + e.getMessage(), e);
+    }
+    JsonNode data = VaultAuthRequests.parse(body, url).path("data");
+    Token<VaultDelegationTokenIdentifier> token = VaultDelegationTokens.decode(
+        data.path("token").asText(null), service, url);
+    if (doas != null) {
+      checkOwner(client, token, doas, data.has("real_user"), url);
+    }
+    return token;
+  }
+
+  /**
+   * Cancel and refuse a token that is not owned by {@code doas}. A server
+   * without {@code doas} support ignores the field, issues the token to the
+   * caller itself and answers without {@code real_user}.
+   */
+  private void checkOwner(VaultHttpClient client,
+      Token<VaultDelegationTokenIdentifier> token, String doas,
+      boolean doasSupported, String url) throws IOException {
+    if (!doasSupported) {
+      cancelQuietly(client, token);
+      throw new ImpersonationRefusedException("Vault does not support doas: "
+          + "its response from " + url + " has no real_user", null);
+    }
+    String owner;
+    try {
+      owner = VaultDelegationTokens.identifier(token, url).getOwner()
+          .toString();
+    } catch (IOException e) {
+      cancelQuietly(client, token);
+      throw e;
+    }
+    if (!VaultDelegationTokens.namesOwner(doas, owner)) {
+      cancelQuietly(client, token);
+      throw new IOException("Vault response from " + url + " has a token "
+          + "owned by " + owner + ", expected " + doas);
+    }
+  }
+
+  private void cancelQuietly(VaultHttpClient client, Token<?> token) {
+    try {
+      cancel(client, token);
+    } catch (IOException e) {
+      LOG.warn("Failed to cancel Vault delegation token {}: {}", token,
+          e.getMessage());
+    }
+  }
+
+  /** Vault issues no token on behalf of the user asked for. */
+  static final class ImpersonationRefusedException extends IOException {
+    private static final long serialVersionUID = 1L;
+
+    ImpersonationRefusedException(String message, Throwable cause) {
+      super(message, cause);
+    }
   }
 
   /**
@@ -126,8 +196,8 @@ public class KerberosVaultAuth implements VaultAuthMethod {
   }
 
   /**
-   * Cancel a token; the authenticated principal must be its owner or
-   * renewer.
+   * Cancel a token; the authenticated principal must be its owner, its
+   * renewer, or allowed to impersonate its owner.
    */
   void cancel(VaultHttpClient client, Token<?> token) throws IOException {
     String url = delegationUrl("cancel");
@@ -140,7 +210,7 @@ public class KerberosVaultAuth implements VaultAuthMethod {
     return connInfo.getApiUrl(mountPath + "/delegation/" + action);
   }
 
-  private String ownerRealm() {
+  private String loginRealm() {
     String realm = new KerberosName(vaultUgi.getUserName()).getRealm();
     return realm != null ? realm : KerberosName.getDefaultRealm();
   }

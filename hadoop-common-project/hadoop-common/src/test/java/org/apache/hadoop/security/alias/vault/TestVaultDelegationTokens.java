@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.commons.io.IOUtils;
@@ -46,6 +47,7 @@ import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.authentication.util.KerberosName;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.thirdparty.com.google.common.base.Ticker;
@@ -69,9 +71,10 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * Delegation token round trips against a mock of the Vault Kerberos auth
- * backend: issue over SPNEGO as the current user, log in with the token
- * from a process without Kerberos credentials, renew and cancel as the
- * renewer.
+ * backend: issue over SPNEGO as the current user, or as the real user of a
+ * proxy user on its behalf, log in with the token from a process without
+ * Kerberos credentials, renew as the renewer and cancel as the renewer or
+ * the impersonating real user.
  */
 public class TestVaultDelegationTokens {
 
@@ -102,6 +105,16 @@ public class TestVaultDelegationTokens {
   private final Set<String> vaultTokens = ConcurrentHashMap.newKeySet();
   private final List<String> requests =
       Collections.synchronizedList(new ArrayList<>());
+  /** Principal to the principals it may impersonate. */
+  private final Map<String, Set<String>> proxyGrants =
+      new ConcurrentHashMap<>();
+  /** Whether issuing honours doas; a server without support ignores it. */
+  private volatile boolean doasSupported = true;
+  /** Whether every token request is refused. */
+  private volatile boolean issuingRefused;
+  /** Owner and real user issued tokens carry instead of the right ones. */
+  private volatile String forgedOwner;
+  private volatile String forgedRealUser;
   /** Vault token each read of the secret carried. */
   private final List<String> secretReads =
       Collections.synchronizedList(new ArrayList<>());
@@ -176,7 +189,7 @@ public class TestVaultDelegationTokens {
   }
 
   @Test
-  public void testIssuerRequiresOwnKerberosLogin() throws Exception {
+  public void testIssuerRequiresAKerberosLogin() throws Exception {
     GenericTestUtils.LogCapturer logs = GenericTestUtils.LogCapturer
         .captureLogs(LoggerFactory.getLogger(VaultCredentialProvider.class));
     VaultCredentialProvider provider = provider(conf);
@@ -186,7 +199,7 @@ public class TestVaultDelegationTokens {
     remote.setAuthenticationMethod(
         UserGroupInformation.AuthenticationMethod.KERBEROS);
     UserGroupInformation proxy =
-        UserGroupInformation.createProxyUser("bob", clientUgi);
+        UserGroupInformation.createProxyUser("bob", remote);
 
     for (UserGroupInformation ugi : Arrays.asList(nobody, remote, proxy)) {
       assertNull(ugi.getUserName(), ugi.doAs(
@@ -197,12 +210,242 @@ public class TestVaultDelegationTokens {
         provider.addDelegationTokens(RENEWER_PRINCIPAL, creds)).length);
 
     assertEquals(0, creds.numberOfTokens());
-    assertFalse(requests.toString(),
-        requests.stream().anyMatch(r -> r.startsWith("issue ")));
-    assertTrue(logs.getOutput(),
-        logs.getOutput().contains("a proxy user cannot own one"));
+    assertEquals(requests.toString(), 0, requests.size());
+    assertTrue(logs.getOutput(), logs.getOutput().contains(
+        "to bob: its real user alice has no Kerberos login"));
     assertTrue(logs.getOutput(),
         logs.getOutput().contains("the user has no Kerberos login"));
+  }
+
+  @Test
+  public void testProxyUserTokenIsIssuedThroughItsRealUser()
+      throws Exception {
+    String hive = KRB.principal("hive");
+    allowImpersonation(hive, KRB.principal("alice"));
+    Credentials creds = new Credentials();
+
+    Token<?>[] issued = hiveProxy("alice").doAs(
+        (PrivilegedExceptionAction<Token<?>[]>) () ->
+            provider(conf).addDelegationTokens(RENEWER_PRINCIPAL, creds));
+
+    assertEquals(1, issued.length);
+    VaultDelegationTokenIdentifier id = identifier(issued[0]);
+    assertEquals(KRB.principal("alice"), id.getOwner().toString());
+    assertEquals(hive, id.getRealUser().toString());
+    assertEquals(RENEWER_PRINCIPAL, id.getRenewer().toString());
+    assertEquals(Collections.singletonList("issue " + hive + " renewer="
+        + RENEWER_PRINCIPAL + " doas=alice"), requests);
+    assertEquals(MockVault.SECRET_VALUE,
+        readAs(container("alice", creds), containerConf()));
+  }
+
+  @Test
+  public void testRefusedImpersonationYieldsNoToken() throws Exception {
+    GenericTestUtils.LogCapturer logs = GenericTestUtils.LogCapturer
+        .captureLogs(LoggerFactory.getLogger(VaultCredentialProvider.class));
+    VaultCredentialProvider provider = provider(conf);
+    Credentials creds = new Credentials();
+
+    assertEquals(0, hiveProxy("alice").doAs(
+        (PrivilegedExceptionAction<Token<?>[]>) () ->
+            provider.addDelegationTokens(RENEWER_PRINCIPAL, creds)).length);
+
+    assertEquals(0, creds.numberOfTokens());
+    assertTrue(logs.getOutput(), logs.getOutput().contains(
+        "Vault refused the token request of " + KRB.principal("hive")));
+    assertTrue(logs.getOutput(), logs.getOutput().contains(
+        "may not impersonate " + KRB.principal("alice")));
+  }
+
+  @Test
+  public void testRefusedOwnTokenRequestIsAnError() throws Exception {
+    issuingRefused = true;
+    VaultCredentialProvider provider = provider(conf);
+
+    asClient(() -> intercept(IOException.class, "failed with status 403",
+        () -> provider.getDelegationToken(RENEWER_PRINCIPAL)));
+  }
+
+  @Test
+  public void testMalformedDoasIsAnError() throws Exception {
+    VaultCredentialProvider provider = provider(conf);
+
+    hiveProxy("alice smith").doAs((PrivilegedExceptionAction<Void>) () -> {
+      intercept(IOException.class, "failed with status 400",
+          () -> provider.getDelegationToken(RENEWER_PRINCIPAL));
+      return null;
+    });
+  }
+
+  @Test
+  public void testServerIgnoringDoasYieldsNoToken() throws Exception {
+    GenericTestUtils.LogCapturer logs = GenericTestUtils.LogCapturer
+        .captureLogs(LoggerFactory.getLogger(VaultCredentialProvider.class));
+    doasSupported = false;
+    String hive = KRB.principal("hive");
+    VaultCredentialProvider provider = provider(conf);
+    Credentials creds = new Credentials();
+
+    assertEquals(0, hiveProxy("alice").doAs(
+        (PrivilegedExceptionAction<Token<?>[]>) () ->
+            provider.addDelegationTokens(RENEWER_PRINCIPAL, creds)).length);
+
+    assertEquals(0, creds.numberOfTokens());
+    assertFalse(expiries.containsKey(1));
+    assertEquals(Arrays.asList(
+        "issue " + hive + " renewer=" + RENEWER_PRINCIPAL + " doas=alice",
+        "cancel 1 by " + hive), requests);
+    assertTrue(logs.getOutput(),
+        logs.getOutput().contains("Vault does not support doas"));
+  }
+
+  @Test
+  public void testServerIgnoringADoasOfTheLoginsNameYieldsNoToken()
+      throws Exception {
+    doasSupported = false;
+
+    assertNull(issueToken(hiveProxy("hive"), RENEWER_PRINCIPAL));
+
+    assertFalse(expiries.containsKey(1));
+  }
+
+  @Test
+  public void testTokenWithACanonicalizedRealUserIsAccepted()
+      throws Exception {
+    allowImpersonation(KRB.principal("hive"), KRB.principal("alice"));
+    forgedRealUser = "HIVE@" + KRB.realm();
+
+    Token<?> token = issueToken(hiveProxy("alice"), RENEWER_PRINCIPAL);
+
+    assertEquals(KRB.principal("alice"),
+        identifier(token).getOwner().toString());
+    assertTrue(expiries.containsKey(1));
+  }
+
+  @Test
+  public void testTokenOfAnotherOwnerIsCancelled() throws Exception {
+    allowImpersonation(KRB.principal("hive"), KRB.principal("alice"),
+        KRB.principal("bob"));
+    forgedOwner = KRB.principal("bob");
+
+    assertRefused("owned by " + KRB.principal("bob"));
+
+    assertFalse(expiries.containsKey(1));
+  }
+
+  @Test
+  public void testTokenIsRefusedWhenItCannotBeCancelled() throws Exception {
+    allowImpersonation(KRB.principal("hive"), KRB.principal("alice"));
+    forgedOwner = KRB.principal("bob");
+
+    assertRefused("owned by " + KRB.principal("bob"));
+
+    assertTrue(expiries.containsKey(1));
+  }
+
+  @Test
+  public void testDoasOfTheRealUserItselfYieldsAnOrdinaryToken()
+      throws Exception {
+    String hive = KRB.principal("hive");
+
+    Token<?> token = issueToken(hiveProxy("hive"), RENEWER_PRINCIPAL);
+
+    VaultDelegationTokenIdentifier id = identifier(token);
+    assertEquals(hive, id.getOwner().toString());
+    assertEquals("", id.getRealUser().toString());
+    assertTrue(expiries.containsKey(1));
+  }
+
+  @Test
+  public void testRenewerIsRecordedInTheRealUsersRealm() throws Exception {
+    String rules = KerberosName.getRules();
+    KerberosName.setRules("RULE:[1:$1@$0](.*@USERS\\.REALM)s/@.*//\nDEFAULT");
+    try {
+      String alice = "alice@USERS.REALM";
+      allowImpersonation(KRB.principal("hive"), alice);
+
+      Token<?> token = issueToken(hiveProxy(alice),
+          RENEWER_PRINCIPAL + "/rm1.example.com@" + KRB.realm());
+
+      assertEquals(alice, identifier(token).getOwner().toString());
+      assertEquals(RENEWER_PRINCIPAL, renewerOf(token));
+      Configuration rmConf = rmConf();
+      long expiry = KRB.loginFromKeytab(RENEWER_PRINCIPAL).doAs(
+          (PrivilegedExceptionAction<Long>) () -> token.renew(rmConf));
+      assertEquals(expiries.get(1).longValue(), expiry);
+    } finally {
+      KerberosName.setRules(rules);
+    }
+  }
+
+  @Test
+  public void testProxyUserCancelsThroughItsRealUser() throws Exception {
+    String hive = KRB.principal("hive");
+    allowImpersonation(hive, KRB.principal("alice"));
+    UserGroupInformation proxy = hiveProxy("alice");
+    Token<?> token = issueToken(proxy, RENEWER_PRINCIPAL);
+
+    proxy.doAs((PrivilegedExceptionAction<Void>) () -> {
+      token.cancel(conf);
+      return null;
+    });
+
+    assertFalse(expiries.containsKey(1));
+    assertTrue(requests.toString(), requests.contains("cancel 1 by " + hive));
+  }
+
+  @Test
+  public void testCancelNeedsAKerberosLogin() throws Exception {
+    Token<?> token = issueToken(RENEWER_PRINCIPAL);
+    UserGroupInformation proxy = UserGroupInformation.createProxyUser("alice",
+        UserGroupInformation.createRemoteUser("hive"));
+
+    proxy.doAs((PrivilegedExceptionAction<Void>) () -> {
+      intercept(IOException.class, "Cannot authenticate to " + serverService()
+          + " as alice: its real user hive has no Kerberos login",
+          () -> token.cancel(conf));
+      return null;
+    });
+    assertTrue(expiries.containsKey(1));
+  }
+
+  @Test
+  public void testDoasNamesTheOwner() {
+    assertTrue(VaultDelegationTokens.namesOwner("alice", "alice@EXAMPLE.COM"));
+    assertTrue(VaultDelegationTokens.namesOwner("alice", "alice@USERS.REALM"));
+    assertTrue(VaultDelegationTokens.namesOwner("alice/admin",
+        "alice/admin@EXAMPLE.COM"));
+    assertTrue(VaultDelegationTokens.namesOwner("alice@USERS.REALM",
+        "alice@USERS.REALM"));
+    assertFalse(VaultDelegationTokens.namesOwner("alice",
+        "hive/hs2.example.com@EXAMPLE.COM"));
+    assertFalse(VaultDelegationTokens.namesOwner("alice",
+        "alice/admin@EXAMPLE.COM"));
+    assertFalse(VaultDelegationTokens.namesOwner("alice@USERS.REALM",
+        "alice@EXAMPLE.COM"));
+    assertFalse(VaultDelegationTokens.namesOwner("alice@USERS.REALM",
+        "alice"));
+  }
+
+  /** A proxy user of the Kerberos login of hive, as in HiveServer2. */
+  private UserGroupInformation hiveProxy(String user) throws IOException {
+    return UserGroupInformation.createProxyUser(user,
+        KRB.loginFromKeytab("hive"));
+  }
+
+  /**
+   * A token hive asks for on behalf of alice is refused for the given
+   * reason and never reaches the credentials.
+   */
+  private void assertRefused(String reason) throws Exception {
+    VaultCredentialProvider provider = provider(conf);
+    Credentials creds = new Credentials();
+    hiveProxy("alice").doAs((PrivilegedExceptionAction<Void>) () -> {
+      intercept(IOException.class, reason,
+          () -> provider.addDelegationTokens(RENEWER_PRINCIPAL, creds));
+      return null;
+    });
+    assertEquals(0, creds.numberOfTokens());
   }
 
   @Test
@@ -382,7 +625,7 @@ public class TestVaultDelegationTokens {
   }
 
   @Test
-  public void testRenewerIsRecordedByPrimaryForOwnerRealm()
+  public void testRenewerIsRecordedByPrimaryForTheLoginRealm()
       throws Exception {
     String client = KRB.principal(CLIENT_PRINCIPAL);
 
@@ -657,8 +900,14 @@ public class TestVaultDelegationTokens {
   }
 
   private Token<?> issueToken(String renewer) throws Exception {
+    return issueToken(clientUgi, renewer);
+  }
+
+  private Token<?> issueToken(UserGroupInformation ugi, String renewer)
+      throws Exception {
     VaultCredentialProvider provider = provider(conf);
-    return asClient(() -> provider.getDelegationToken(renewer));
+    return ugi.doAs((PrivilegedExceptionAction<Token<?>>) () ->
+        provider.getDelegationToken(renewer));
   }
 
   private static String renewerOf(Token<?> token) throws IOException {
@@ -777,17 +1026,7 @@ public class TestVaultDelegationTokens {
       JsonNode json, String principal) throws Exception {
     long now = System.currentTimeMillis();
     if (action.equals("token")) {
-      String renewer = json.path("renewer").asText("");
-      int seq = sequence.incrementAndGet();
-      Token<VaultDelegationTokenIdentifier> token = new Token<>(
-          rawIdentifier(principal, renewer, seq, now), PASSWORD,
-          VaultDelegationTokenIdentifier.KIND_NAME,
-          new Text(json.path("service").asText("")));
-      expiries.put(seq, now + RENEW_INTERVAL_MS);
-      requests.add("issue " + principal + " renewer=" + renewer);
-      MockVault.sendResponse(exchange, 200, "{\"data\":{\"token\":\""
-          + token.encodeToUrlString() + "\",\"expiry\":"
-          + expiries.get(seq) + ",\"sequence_number\":" + seq + "}}");
+      issue(exchange, json, principal, now);
       return;
     }
 
@@ -799,36 +1038,114 @@ public class TestVaultDelegationTokens {
       MockVault.sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
       return;
     }
-    boolean isRenewer = callerMatches(principal, id.getRenewer().toString());
-    boolean isOwner = principal.equals(id.getOwner().toString());
+    String owner = id.getOwner().toString();
+    String realUser = id.getRealUser().toString();
+    boolean isRenewer = callerMatches(principal, id.getRenewer().toString(),
+        realmOf(realUser.isEmpty() ? owner : realUser));
+    boolean isOwner = principal.equals(owner);
     if (action.equals("renew") && isRenewer) {
       expiries.put(seq, now + RENEW_INTERVAL_MS);
       requests.add("renew " + seq + " by " + principal);
       MockVault.sendResponse(exchange, 200,
           "{\"data\":{\"expiry\":" + expiries.get(seq) + "}}");
-    } else if (action.equals("cancel") && (isRenewer || isOwner)) {
+    } else if (action.equals("cancel")
+        && (isRenewer || isOwner || mayImpersonate(principal, owner))) {
       expiries.remove(seq);
+      requests.add("cancel " + seq + " by " + principal);
       MockVault.sendResponse(exchange, 204, "");
     } else {
-      MockVault.sendResponse(exchange, 403, "{\"errors\":[\"principal "
-          + principal + " may not " + action + " delegation token " + seq
-          + "\"]}");
+      MockVault.sendResponse(exchange, 403, errors("principal " + principal
+          + " may not " + action + " delegation token " + seq));
     }
   }
 
   /**
-   * Vault's renewer rule: the full principal, or for callers from the
-   * owner's realm the primary/instance or bare primary.
+   * Issue a token to the caller or, with doas, to the user it names (in the
+   * caller's realm when the name has none), where a grant lets the caller
+   * impersonate them. A server without doas support ignores the field and
+   * answers without real_user.
    */
-  private boolean callerMatches(String principal, String name) {
+  private void issue(HttpExchange exchange, JsonNode json, String principal,
+      long now) throws IOException {
+    if (issuingRefused) {
+      MockVault.sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+      return;
+    }
+    String doas = json.path("doas").asText(null);
+    String owner = principal;
+    String realUser = "";
+    if (doas != null && doasSupported) {
+      if (doas.matches(".*[ *,].*")) {
+        MockVault.sendResponse(exchange, 400,
+            errors("doas \"" + doas + "\" is not a principal name"));
+        return;
+      }
+      owner = doas.contains("@") ? doas : doas + "@" + realmOf(principal);
+      if (!owner.equals(principal)) {
+        if (!mayImpersonate(principal, owner)) {
+          MockVault.sendResponse(exchange, 403, errors("principal "
+              + principal + " may not impersonate " + owner));
+          return;
+        }
+        realUser = principal;
+      }
+    }
+    owner = forgedOwner != null ? forgedOwner : owner;
+    realUser = forgedRealUser != null ? forgedRealUser : realUser;
+    String renewer = json.path("renewer").asText("");
+    int seq = sequence.incrementAndGet();
+    Token<VaultDelegationTokenIdentifier> token = new Token<>(
+        rawIdentifier(owner, renewer, realUser, seq, now), PASSWORD,
+        VaultDelegationTokenIdentifier.KIND_NAME,
+        new Text(json.path("service").asText("")));
+    expiries.put(seq, now + RENEW_INTERVAL_MS);
+    requests.add("issue " + principal + " renewer=" + renewer
+        + (doas != null ? " doas=" + doas : ""));
+    ObjectNode data = MAPPER.createObjectNode()
+        .put("token", token.encodeToUrlString())
+        .put("owner", owner)
+        .put("expiry", expiries.get(seq))
+        .put("sequence_number", seq);
+    if (doasSupported) {
+      data.put("real_user", realUser);
+    }
+    MockVault.sendResponse(exchange, 200,
+        MAPPER.createObjectNode().set("data", data).toString());
+  }
+
+  private void allowImpersonation(String principal, String... owners) {
+    proxyGrants.computeIfAbsent(principal,
+        p -> ConcurrentHashMap.newKeySet()).addAll(Arrays.asList(owners));
+  }
+
+  private boolean mayImpersonate(String principal, String owner) {
+    return proxyGrants.getOrDefault(principal, Collections.emptySet())
+        .contains(owner);
+  }
+
+  private static String realmOf(String principal) {
+    return principal.substring(principal.lastIndexOf('@') + 1);
+  }
+
+  private static String errors(String message) {
+    return MAPPER.createObjectNode().set("errors",
+        MAPPER.createArrayNode().add(message)).toString();
+  }
+
+  /**
+   * Vault's renewer rule: the full principal, or for callers from the
+   * realm of the principal that requested the token the primary/instance
+   * or bare primary.
+   */
+  private static boolean callerMatches(String principal, String name,
+      String requesterRealm) {
     if (name.equals(principal)) {
       return true;
     }
-    int at = principal.indexOf('@');
-    if (!principal.substring(at + 1).equals(KRB.realm())) {
+    if (!realmOf(principal).equals(requesterRealm)) {
       return false;
     }
-    String user = principal.substring(0, at);
+    String user = principal.substring(0, principal.lastIndexOf('@'));
     int slash = user.indexOf('/');
     String primary = slash < 0 ? user : user.substring(0, slash);
     return name.equals(user) || name.equals(primary);
@@ -838,13 +1155,13 @@ public class TestVaultDelegationTokens {
    * Identifier bytes as the server writes them: the renewer is recorded
    * exactly as requested, without auth_to_local shortening.
    */
-  private static byte[] rawIdentifier(String owner, String renewer, int seq,
-      long now) throws IOException {
+  private static byte[] rawIdentifier(String owner, String renewer,
+      String realUser, int seq, long now) throws IOException {
     DataOutputBuffer out = new DataOutputBuffer();
     out.writeByte(0);
     new Text(owner).write(out);
     new Text(renewer).write(out);
-    new Text("").write(out);
+    new Text(realUser).write(out);
     WritableUtils.writeVLong(out, now);
     WritableUtils.writeVLong(out, now + MAX_LIFETIME_MS);
     WritableUtils.writeVInt(out, seq);

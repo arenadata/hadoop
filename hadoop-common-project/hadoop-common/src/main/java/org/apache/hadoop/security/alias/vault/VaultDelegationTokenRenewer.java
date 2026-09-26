@@ -36,11 +36,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Renews and cancels Vault delegation tokens as the current user over
- * SPNEGO. The Vault server and auth mount come from the token service; the
- * service principal and TLS settings come from the configuration. A token
- * names the server the renewer authenticates to, so the server is checked
- * against the ones this host is configured for.
+ * Renews and cancels Vault delegation tokens over SPNEGO as the current
+ * user, or as the real user behind a proxy user, who may cancel the tokens
+ * of the users it impersonates. The Vault server and auth mount come from
+ * the token service; the service principal and TLS settings come from the
+ * configuration. A token names the server the renewer authenticates to, so
+ * the server is checked against the ones this host is configured for.
  */
 @InterfaceAudience.Private
 public class VaultDelegationTokenRenewer extends TokenRenewer {
@@ -87,9 +88,15 @@ public class VaultDelegationTokenRenewer extends TokenRenewer {
     VaultConnectionInfo connInfo = VaultConnectionInfo.fromTokenService(
         service);
     checkServer(conf, connInfo.getServerService());
+    UserGroupInformation caller = UserGroupInformation.getCurrentUser();
+    UserGroupInformation login = VaultDelegationTokens.kerberosLogin(caller);
+    if (login == null) {
+      throw new IOException("Cannot authenticate to "
+          + connInfo.getServerService() + " as " + caller.getUserName()
+          + ": " + VaultDelegationTokens.noKerberosLogin(caller));
+    }
     KerberosVaultAuth auth = new KerberosVaultAuth(conf, connInfo,
-        VaultDelegationTokens.authMountPath(service),
-        UserGroupInformation.getCurrentUser());
+        VaultDelegationTokens.authMountPath(service), login);
     VaultHttpClient client = VaultHttpClient.unauthenticated(conf, connInfo);
     try {
       return call.apply(auth, client);
