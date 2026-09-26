@@ -23,6 +23,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.alias.CredentialProvider;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.alias.JavaKeyStoreProvider;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -31,6 +35,7 @@ import org.apache.curator.test.InstanceSpec;
 import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.fs.Path;
 import org.apache.zookeeper.ClientCnxnSocketNetty;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.client.ZKClientConfig;
@@ -39,6 +44,7 @@ import org.apache.zookeeper.server.NettyServerCnxnFactory;
 
 import static org.apache.hadoop.fs.FileContext.LOG;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Test the manager for ZooKeeper Curator when SSL/TLS is enabled for the ZK server-client
@@ -189,7 +195,38 @@ public class TestSecureZKCuratorManager {
   }
 
   @Test(timeout = 60000)
-  public void testTruststoreKeystoreConfiguration() {
+  public void testSslPasswordsFromCredentialProvider() throws Exception {
+    Configuration conf = new Configuration(hadoopConf);
+    conf.unset(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD);
+    conf.unset(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD);
+    File jks = new File(GenericTestUtils.getTestDir(), "zk-ssl.jceks");
+    jks.delete();
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        JavaKeyStoreProvider.SCHEME_NAME + "://file" + new Path(jks.getAbsolutePath()).toUri());
+    CredentialProvider provider = CredentialProviderFactory.getProviders(conf).get(0);
+    provider.createCredentialEntry(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD,
+        "password".toCharArray());
+    provider.createCredentialEntry(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD,
+        "password".toCharArray());
+    provider.flush();
+
+    SecurityUtil.TruststoreKeystore truststoreKeystore =
+        new SecurityUtil.TruststoreKeystore(conf);
+    assertEquals("password", truststoreKeystore.getKeystorePassword());
+    assertEquals("password", truststoreKeystore.getTruststorePassword());
+
+    ZKCuratorManager manager = new ZKCuratorManager(conf);
+    try {
+      manager.start(new ArrayList<>(), true);
+      assertTrue(manager.create("/credential-provider"));
+      assertTrue(manager.exists("/credential-provider"));
+    } finally {
+      manager.close();
+    }
+  }
+
+  @Test(timeout = 60000)
+  public void testTruststoreKeystoreConfiguration() throws Exception {
     LOG.info("Entered to the testTruststoreKeystoreConfiguration test case.");
     /*
       By default the truststore/keystore configurations are not set, hence the values are null.

@@ -43,7 +43,6 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.security.SecurityUtil.TruststoreKeystore;
 import org.apache.hadoop.security.authentication.util.ZookeeperClient;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenManager;
@@ -203,19 +202,24 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
               conf.getBoolean(ZK_DTSM_ZK_SSL_ENABLED, false));
       String keystoreLocation = conf.get(ZK_DTSM_ZK_SSL_KEYSTORE_LOCATION,
           conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, ""));
-      String keystorePassword = conf.get(ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
-          conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD, ""));
       String truststoreLocation = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_LOCATION,
           conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, ""));
-      String truststorePassword = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD,
-          conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD, ""));
+      String keystorePassword = "";
+      String truststorePassword = "";
+      // A missing store is reported by ZookeeperClient; no provider error may mask it.
+      if (isSSLEnabled && !keystoreLocation.isEmpty() && !truststoreLocation.isEmpty()) {
+        keystorePassword = getSslPassword(conf, ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
+            CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD);
+        truststorePassword = getSslPassword(conf, ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD,
+            CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD);
+      }
 
+      // SSL is set up by ZookeeperClient below; an SSL-enabled factory would
+      // overwrite it with the hadoop.zk.ssl.* values.
       ZookeeperFactory zkFactory = new HadoopZookeeperFactory(
           conf.get(ZK_DTSM_ZK_KERBEROS_SERVER_PRINCIPAL),
           conf.get(ZK_DTSM_ZK_KERBEROS_PRINCIPAL),
-          conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB),
-          isSSLEnabled,
-          new TruststoreKeystore(conf));
+          conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB));
 
 
       return ZookeeperClient.configure()
@@ -238,6 +242,15 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
     } catch (Exception ex) {
       throw new RuntimeException("Could not Load ZK acls or auth: " + ex, ex);
     }
+  }
+
+  private static String getSslPassword(Configuration conf, String name,
+      String fallbackName) throws IOException {
+    char[] password = conf.getPassword(name);
+    if (password == null) {
+      password = conf.getPassword(fallbackName);
+    }
+    return password == null ? "" : String.valueOf(password);
   }
 
   @Override

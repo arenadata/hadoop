@@ -78,4 +78,9 @@ public class VaultDelegationTokenAuth implements VaultAuthMethod {
         loginUrl, owner.getUserName());
     return vaultToken;
   }
+
+  @Override
+  public String toString() {
+    return "the delegation token of " + owner.getUserName();
+  }
 }

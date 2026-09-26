@@ -26,6 +26,7 @@ import java.util.Random;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.Text;
@@ -307,6 +308,17 @@ public class TestCredentialProviderFactory {
         CredentialProviderFactory.addDelegationTokens(conf, "yarn", creds)
             .size());
     assertEquals(1, TokenIssuingCredentialProvider.ISSUED.get());
+  }
+
+  @Test
+  public void testExcludeIncompatibleProvidersKeepsNonNestedUri() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "jceks://file/tmp/test.jceks,vault://vault.example.com:8200/secret/hadoop");
+    Configuration filtered =
+        ProviderUtils.excludeIncompatibleCredentialProviders(conf, LocalFileSystem.class);
+    assertEquals("vault://vault.example.com:8200/secret/hadoop",
+        filtered.get(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH));
   }
 
   @Test

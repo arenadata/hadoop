@@ -29,9 +29,11 @@ import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.Certificate;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -172,6 +174,28 @@ public class TestVaultHttpClient {
   }
 
   @Test
+  public void testRequestsCarryTheVaultRequestHeader() throws Exception {
+    List<String> headers = new CopyOnWriteArrayList<>();
+    server.createContext("/v1/secret/data/hadoop/db.password",
+        exchange -> {
+          headers.add(exchange.getRequestHeaders().getFirst("X-Vault-Request"));
+          sendResponse(exchange, 200,
+              "{\"data\":{\"data\":{\"value\":\"p@ssw0rd\"}}}");
+        });
+    server.createContext("/v1/auth/test/login",
+        exchange -> {
+          headers.add(exchange.getRequestHeaders().getFirst("X-Vault-Request"));
+          sendResponse(exchange, 200, "{}");
+        });
+
+    client.readSecret("secret/data/hadoop/db.password", "value");
+    VaultAuthRequests.post(client,
+        "http://localhost:" + port + "/v1/auth/test/login", null, "{}",
+        "Vault test login");
+    assertEquals(Arrays.asList("true", "true"), headers);
+  }
+
+  @Test
   public void testReadSecretNotFound() throws Exception {
     server.createContext("/v1/secret/data/hadoop/missing",
         exchange -> {
@@ -304,6 +328,7 @@ public class TestVaultHttpClient {
   public void testReauthOn403() throws Exception {
     AtomicInteger callCount = new AtomicInteger(0);
     String newToken = "s.newtoken";
+    AtomicInteger lookups = serveTokenLookup(newToken);
 
     VaultAuthMethod auth = new VaultAuthMethod() {
       private int authCount = 0;
@@ -332,21 +357,22 @@ public class TestVaultHttpClient {
     assertEquals("secret", value);
     assertEquals("re-authentication needs no retry budget", 2,
         callCount.get());
+    assertEquals(1, lookups.get());
   }
 
+  /** A token Vault refuses even after a fresh login is a failure. */
   @Test
   public void testPersistentForbiddenReportsTheStatusAndBody()
       throws Exception {
     AtomicInteger callCount = new AtomicInteger(0);
     AtomicInteger authCount = new AtomicInteger(0);
+    AtomicInteger lookups = serveTokenLookup();
     server.createContext("/v1/secret/data/hadoop/denied", exchange -> {
       callCount.incrementAndGet();
       sendResponse(exchange, 403, "{\"errors\":[\"permission denied\"]}");
     });
-    VaultHttpClient denied = new VaultHttpClient(connInfo, c -> {
-      authCount.incrementAndGet();
-      return TEST_TOKEN;
-    }, 5000, 5000, 3, 100);
+    VaultHttpClient denied = new VaultHttpClient(connInfo,
+        c -> "s.login-" + authCount.incrementAndGet(), 5000, 5000, 3, 100);
 
     IOException e = intercept(IOException.class, "permission denied",
         () -> denied.readSecret("secret/data/hadoop/denied", "value"));
@@ -355,6 +381,211 @@ public class TestVaultHttpClient {
     assertEquals("one request, one re-authentication, one more request", 2,
         callCount.get());
     assertEquals(2, authCount.get());
+    assertEquals(2, lookups.get());
+  }
+
+  @Test
+  public void testARefusedStaticTokenIsNotSentAgain() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    AtomicInteger authCount = new AtomicInteger(0);
+    AtomicInteger lookups = serveTokenLookup();
+    server.createContext("/v1/secret/data/hadoop/denied", exchange -> {
+      callCount.incrementAndGet();
+      sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+    });
+    VaultHttpClient denied = new VaultHttpClient(connInfo, c -> {
+      authCount.incrementAndGet();
+      return TEST_TOKEN;
+    }, 5000, 5000, 3, 100);
+
+    intercept(IOException.class, "status 403",
+        () -> denied.readSecret("secret/data/hadoop/denied", "value"));
+    intercept(IOException.class, "status 403",
+        () -> denied.writeSecret("secret/data/hadoop/denied",
+            new HashMap<>(), 0));
+
+    assertEquals(2, callCount.get());
+    assertEquals(3, authCount.get());
+    assertEquals(1, lookups.get());
+  }
+
+  @Test
+  public void testAReadThePolicyDeniesIsAbsent() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    AtomicInteger authCount = new AtomicInteger(0);
+    AtomicInteger lookups = serveTokenLookup(TEST_TOKEN);
+    server.createContext("/v1/secret/data/hadoop/denied", exchange -> {
+      callCount.incrementAndGet();
+      sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+    });
+    VaultHttpClient denied = new VaultHttpClient(connInfo, c -> {
+      authCount.incrementAndGet();
+      return TEST_TOKEN;
+    }, 5000, 5000, 3, 100);
+
+    assertNull(denied.readSecret("secret/data/hadoop/denied", "value"));
+
+    assertEquals(1, callCount.get());
+    assertEquals("no re-authentication", 1, authCount.get());
+    assertEquals(1, lookups.get());
+  }
+
+  @Test
+  public void testADenialOfTheNewTokenIsAbsent() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    AtomicInteger authCount = new AtomicInteger(0);
+    String newToken = "s.newtoken";
+    AtomicInteger lookups = serveTokenLookup(newToken);
+    server.createContext("/v1/secret/data/hadoop/denied", exchange -> {
+      callCount.incrementAndGet();
+      sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+    });
+    VaultHttpClient denied = new VaultHttpClient(connInfo,
+        c -> authCount.getAndIncrement() == 0 ? TEST_TOKEN : newToken,
+        5000, 5000, 3, 100);
+
+    assertNull(denied.readSecret("secret/data/hadoop/denied", "value"));
+
+    assertEquals(2, callCount.get());
+    assertEquals(2, authCount.get());
+    assertEquals(2, lookups.get());
+  }
+
+  /**
+   * Policies bound at login change only with a new token, so a token older
+   * than the negative cache TTL gets a fresh login before a denial counts.
+   */
+  @Test
+  public void testAnOldTokenIsRenewedBeforeADenialCounts() throws Exception {
+    AtomicInteger authCount = new AtomicInteger(0);
+    AtomicInteger lookups = serveTokenLookup("s.login-1", "s.login-2");
+    server.createContext("/v1/secret/data/hadoop/granted", exchange ->
+        MockVault.handleSecret(exchange, "s.login-2"::equals));
+    Configuration conf = new Configuration(false);
+    conf.setLong(VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_KEY, 0);
+    VaultHttpClient old = new VaultHttpClient(conf, connInfo,
+        c -> "s.login-" + authCount.incrementAndGet());
+
+    assertEquals(MockVault.SECRET_VALUE,
+        old.readSecret("secret/data/hadoop/granted", "value"));
+
+    assertEquals(2, authCount.get());
+    assertEquals(1, lookups.get());
+  }
+
+  @Test
+  public void testAnOldStaticTokenDeniedByPolicyIsAbsent() throws Exception {
+    AtomicInteger callCount = new AtomicInteger(0);
+    AtomicInteger authCount = new AtomicInteger(0);
+    serveTokenLookup(TEST_TOKEN);
+    server.createContext("/v1/secret/data/hadoop/denied", exchange -> {
+      callCount.incrementAndGet();
+      sendResponse(exchange, 403, MockVault.PERMISSION_DENIED);
+    });
+    Configuration conf = new Configuration(false);
+    conf.setLong(VaultCredentialProviderConfig.CACHE_NEGATIVE_TTL_MS_KEY, 0);
+    VaultHttpClient old = new VaultHttpClient(conf, connInfo, c -> {
+      authCount.incrementAndGet();
+      return TEST_TOKEN;
+    });
+
+    assertNull(old.readSecret("secret/data/hadoop/denied", "value"));
+
+    assertEquals(1, callCount.get());
+    assertEquals(2, authCount.get());
+  }
+
+  @Test
+  public void testADenialWithoutABodyIsAbsent() throws Exception {
+    serveTokenLookup(TEST_TOKEN);
+    server.createContext("/v1/secret/data/hadoop/proxied",
+        exchange -> sendResponse(exchange, 403, ""));
+
+    assertNull(client.readSecret("secret/data/hadoop/proxied", "value"));
+  }
+
+  @Test
+  public void testATransientLookupFailureIsRetried() throws Exception {
+    AtomicInteger authCount = new AtomicInteger(0);
+    AtomicInteger lookups = new AtomicInteger(0);
+    server.createContext(MockVault.TOKEN_LOOKUP_PATH, exchange -> {
+      if (lookups.incrementAndGet() == 1) {
+        sendResponse(exchange, 429, "{\"errors\":[\"rate limit quota\"]}");
+      } else {
+        MockVault.handleTokenLookup(exchange, TEST_TOKEN::equals);
+      }
+    });
+    server.createContext("/v1/secret/data/hadoop/denied",
+        exchange -> sendResponse(exchange, 403, MockVault.PERMISSION_DENIED));
+    VaultHttpClient denied = new VaultHttpClient(connInfo, c -> {
+      authCount.incrementAndGet();
+      return TEST_TOKEN;
+    }, 5000, 5000, 1, 10);
+
+    assertNull(denied.readSecret("secret/data/hadoop/denied", "value"));
+
+    assertEquals(2, lookups.get());
+    assertEquals("no re-authentication", 1, authCount.get());
+  }
+
+  @Test
+  public void testALookupThatKeepsFailingIsReportedAsSuch()
+      throws Exception {
+    AtomicInteger authCount = new AtomicInteger(0);
+    server.createContext(MockVault.TOKEN_LOOKUP_PATH,
+        exchange -> sendResponse(exchange, 503,
+            "{\"errors\":[\"Vault is sealed\"]}"));
+    server.createContext("/v1/secret/data/hadoop/denied",
+        exchange -> sendResponse(exchange, 403, MockVault.PERMISSION_DENIED));
+    VaultHttpClient denied = new VaultHttpClient(connInfo, c -> {
+      authCount.incrementAndGet();
+      return TEST_TOKEN;
+    }, 5000, 5000, 1, 10);
+
+    IOException e = intercept(IOException.class,
+        "Vault token lookup failed after 2 attempts",
+        () -> denied.readSecret("secret/data/hadoop/denied", "value"));
+
+    assertTrue(e.getCause().getMessage(),
+        e.getCause().getMessage().contains("status 503"));
+    assertEquals("no re-authentication", 1, authCount.get());
+  }
+
+  /**
+   * Writes, lists and the read that precedes a write or a delete fail on
+   * a denial even to a token Vault accepts.
+   */
+  @Test
+  public void testADenialFailsAllButASecretRead() throws Exception {
+    serveTokenLookup(TEST_TOKEN);
+    server.createContext("/v1/secret/",
+        exchange -> sendResponse(exchange, 403, MockVault.PERMISSION_DENIED));
+
+    assertNull(client.readSecret("secret/data/hadoop/denied", "value"));
+    intercept(IOException.class, "status 403",
+        () -> client.readSecretFields("secret/data/hadoop/denied"));
+    intercept(IOException.class, "status 403", () -> client.writeSecret(
+        "secret/data/hadoop/denied", new HashMap<>(), 0));
+    intercept(IOException.class, "status 403",
+        () -> client.listSecrets("secret/metadata/hadoop"));
+    intercept(IOException.class, "status 403",
+        () -> client.deleteSecret("secret/metadata/hadoop/denied"));
+  }
+
+  /**
+   * Answer {@code auth/token/lookup-self}: 200 to the accepted tokens, 403
+   * to any other.
+   *
+   * @return the number of lookups
+   */
+  private AtomicInteger serveTokenLookup(String... accepted) {
+    List<String> tokens = Arrays.asList(accepted);
+    AtomicInteger lookups = new AtomicInteger();
+    server.createContext(MockVault.TOKEN_LOOKUP_PATH, exchange -> {
+      lookups.incrementAndGet();
+      MockVault.handleTokenLookup(exchange, tokens::contains);
+    });
+    return lookups;
   }
 
   @Test

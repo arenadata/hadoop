@@ -153,15 +153,17 @@ public final class ProviderUtils {
     Path path = null;
     for (String provider: providers) {
       try {
-        path = unnestUri(new URI(provider));
+        URI providerUri = new URI(provider);
         Class<? extends FileSystem> clazz = null;
         try {
+          path = unnestUri(providerUri);
           String scheme = path.toUri().getScheme();
           clazz = FileSystem.getFileSystemClass(scheme, config);
-        } catch (IOException ioe) {
+        } catch (IOException | IllegalArgumentException e) {
           // not all providers are filesystem based
           // for instance user:/// will not be able to
-          // have a filesystem class associated with it.
+          // have a filesystem class associated with it,
+          // and vault://host:port/path does not unnest to a path.
           if (newProviderPath.length() > 0) {
             newProviderPath.append(",");
           }

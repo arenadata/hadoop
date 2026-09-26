@@ -32,6 +32,7 @@ final class MockVault {
 
   static final String SECRET_PATH = "/v1/secret/data/hadoop/creds/db.password";
   static final String SECRET_VALUE = "s3cret";
+  static final String TOKEN_LOOKUP_PATH = "/v1/auth/token/lookup-self";
   static final String PERMISSION_DENIED =
       "{\"errors\":[\"permission denied\"]}";
 
@@ -47,6 +48,20 @@ final class MockVault {
     if (token != null && tokenAccepted.test(token)) {
       sendResponse(exchange, 200,
           "{\"data\":{\"data\":{\"value\":\"" + SECRET_VALUE + "\"}}}");
+    } else {
+      sendResponse(exchange, 403, PERMISSION_DENIED);
+    }
+  }
+
+  /**
+   * Answer {@code auth/token/lookup-self}: 200 to an accepted Vault token,
+   * 403 to any other.
+   */
+  static void handleTokenLookup(HttpExchange exchange,
+      Predicate<String> tokenAccepted) throws IOException {
+    String token = exchange.getRequestHeaders().getFirst("X-Vault-Token");
+    if (token != null && tokenAccepted.test(token)) {
+      sendResponse(exchange, 200, "{\"data\":{\"policies\":[\"default\"]}}");
     } else {
       sendResponse(exchange, 403, PERMISSION_DENIED);
     }

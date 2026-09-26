@@ -66,9 +66,9 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Credential cache</b> — a Guava {@link Cache} with
  *       {@code expireAfterWrite} TTL, to avoid repeated HTTP round-trips
  *       for the same alias within the same JVM. Entries belong to the
- *       identity that read them; an alias found absent is remembered for
- *       a shorter TTL; writes and deletes drop the alias for every
- *       identity.</li>
+ *       identity that read them; an alias found absent or denied by the
+ *       policy is remembered for a shorter TTL; writes and deletes drop
+ *       the alias for every identity.</li>
  * </ul>
  *
  * {@link #flush()} is a no-op. Writes and deletes update the cache
@@ -95,7 +95,7 @@ public class VaultCredentialProvider extends CredentialProvider
    */
   private static volatile Cache<CredentialKey, String> credentialCache;
 
-  /** Aliases an identity found absent, held for the negative TTL. */
+  /** Aliases an identity found absent or denied, held for the negative TTL. */
   private static volatile Cache<CredentialKey, Boolean> missCache;
 
   /** Settings the JVM-wide caches were built with, by property. */
