@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.security.alias.vault;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -99,6 +101,13 @@ public final class VaultDelegationTokens {
     return real != null && real.shouldRelogin() ? real : null;
   }
 
+  /** Why {@link #kerberosLogin} finds no login for a caller. */
+  static String noKerberosLogin(UserGroupInformation caller) {
+    UserGroupInformation real = caller.getRealUser();
+    return (real == null ? "the user" : "its real user " + real.getUserName())
+        + " has no Kerberos login";
+  }
+
   /**
    * The one of a caller and its real user whose credentials hold a
    * delegation token for the server, or null. A proxy login user carries
@@ -118,15 +127,17 @@ public final class VaultDelegationTokens {
 
   /**
    * The renewer name to record in a token. Vault matches a renewer by its
-   * full principal, or by the primary alone for callers from the owner's
-   * realm, so a same-realm renewer is recorded by its primary and any
-   * ResourceManager of an HA pair or a federation can renew.
+   * full principal, or by the primary alone for callers from the realm of
+   * the principal that requested the token, which is the real user of a
+   * token issued on behalf of another user. So a renewer from that realm
+   * is recorded by its primary and any ResourceManager of an HA pair or a
+   * federation can renew.
    *
    * @param renewer the renewer principal, or null
-   * @param ownerRealm the realm of the token owner
+   * @param loginRealm the realm of the principal requesting the token
    * @return the name to record, or null
    */
-  static String renewerName(String renewer, String ownerRealm) {
+  static String renewerName(String renewer, String loginRealm) {
     if (renewer == null || renewer.isEmpty()) {
       return null;
     }
@@ -137,7 +148,7 @@ public final class VaultDelegationTokens {
       return renewer;
     }
     String realm = name.getRealm();
-    if (realm == null || realm.isEmpty() || realm.equals(ownerRealm)) {
+    if (realm == null || realm.isEmpty() || realm.equals(loginRealm)) {
       return name.getServiceName();
     }
     return renewer;
@@ -166,5 +177,40 @@ public final class VaultDelegationTokens {
     }
     token.setService(new Text(service));
     return token;
+  }
+
+  /**
+   * The identifier of a token issued by {@code delegation/token}.
+   *
+   * @throws IOException if the identifier is malformed
+   */
+  static VaultDelegationTokenIdentifier identifier(Token<?> token,
+      String url) throws IOException {
+    VaultDelegationTokenIdentifier id = new VaultDelegationTokenIdentifier();
+    try (DataInputStream in = new DataInputStream(
+        new ByteArrayInputStream(token.getIdentifier()))) {
+      id.readFields(in);
+    } catch (IOException e) {
+      throw new IOException("Vault response from " + url
+          + " has a malformed token identifier", e);
+    }
+    return id;
+  }
+
+  /**
+   * Whether a token owner is the user a {@code doas} value names. Vault
+   * places a name without a realm in a realm of its own choosing, so such
+   * a name is compared with the owner's name before its realm.
+   *
+   * @param doas the user the token was asked for
+   * @param owner the full principal of the token owner
+   * @return whether the owner is that user
+   */
+  static boolean namesOwner(String doas, String owner) {
+    if (doas.indexOf('@') >= 0) {
+      return owner.equals(doas);
+    }
+    int at = owner.lastIndexOf('@');
+    return (at < 0 ? owner : owner.substring(0, at)).equals(doas);
   }
 }

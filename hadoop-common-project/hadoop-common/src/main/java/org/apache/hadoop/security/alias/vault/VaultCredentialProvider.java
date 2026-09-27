@@ -197,10 +197,12 @@ public class VaultCredentialProvider extends CredentialProvider
   }
 
   /**
-   * Obtain a delegation token owned by the current user, who must hold a
-   * Kerberos login of their own. Returns null when this provider uses
-   * token auth, when delegation tokens are disabled, when the current
-   * user is a proxy user or when they have no Kerberos login: tokens are
+   * Obtain a delegation token owned by the current user. A user with a
+   * Kerberos login of their own asks for it with that login; a proxy user
+   * gets it through the login of its real user, which Vault must allow to
+   * impersonate them. Returns null when this provider uses token auth, when
+   * delegation tokens are disabled, when there is no Kerberos login to ask
+   * with or when Vault issues no token on a proxy user's behalf: tokens are
    * never issued in the name of the dedicated keytab principal.
    */
   @Override
@@ -220,16 +222,14 @@ public class VaultCredentialProvider extends CredentialProvider
       return null;
     }
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
-    if (ugi.getRealUser() != null) {
-      LOG.info("Not issuing a Vault delegation token for {} to {}: a proxy "
-          + "user cannot own one", service, ugi.getUserName());
+    UserGroupInformation login = VaultDelegationTokens.kerberosLogin(ugi);
+    if (login == null) {
+      LOG.info("Not issuing a Vault delegation token for {} to {}: {}",
+          service, ugi.getUserName(),
+          VaultDelegationTokens.noKerberosLogin(ugi));
       return null;
     }
-    if (!ugi.shouldRelogin()) {
-      LOG.info("Not issuing a Vault delegation token for {} to {}: the user "
-          + "has no Kerberos login", service, ugi.getUserName());
-      return null;
-    }
+    String doas = login == ugi ? null : ugi.getUserName();
     String recordedRenewer = conf.getBoolean(
         VaultCredentialProviderConfig.DELEGATION_TOKEN_RENEWABLE_KEY,
         VaultCredentialProviderConfig.DELEGATION_TOKEN_RENEWABLE_DEFAULT)
@@ -240,8 +240,12 @@ public class VaultCredentialProvider extends CredentialProvider
         VaultHttpClient.unauthenticated(conf, connInfo);
     try {
       token = new KerberosVaultAuth(conf, connInfo,
-          VaultAuthRequests.mountPath(conf), ugi)
-          .getDelegationToken(client, recordedRenewer);
+          VaultAuthRequests.mountPath(conf), login)
+          .getDelegationToken(client, recordedRenewer, doas);
+    } catch (KerberosVaultAuth.ImpersonationRefusedException e) {
+      LOG.warn("Not issuing a Vault delegation token for {} to {}: {}",
+          service, doas, e.getMessage());
+      return null;
     } finally {
       client.close();
     }
