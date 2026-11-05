@@ -85,6 +85,15 @@ public class DirectoryScanner implements Runnable {
   final AtomicLong timeRunningMs = new AtomicLong(0L);
 
   /**
+   * Total combined wall clock time (in nanoseconds) spent by the report
+   * compiler threads executing. Used for testing purposes. Unlike the
+   * millisecond counter it stays non-zero when every execution rounds
+   * down to 0 ms.
+   */
+  @VisibleForTesting
+  final AtomicLong timeRunningNanos = new AtomicLong(0L);
+
+  /**
    * Total combined wall clock time (in milliseconds) spent by the report
    * compiler threads blocked by the throttle. Used for testing purposes.
    */
@@ -766,6 +775,7 @@ public class DirectoryScanner implements Runnable {
      */
     private void accumulateTimeRunning() {
       timeRunningMs.getAndAdd(perfTimer.now(TimeUnit.MILLISECONDS));
+      timeRunningNanos.getAndAdd(perfTimer.now(TimeUnit.NANOSECONDS));
       perfTimer.reset().start();
     }
 

@@ -707,7 +707,7 @@ public class TestDirectoryScanner {
       assertTrue("Throttle appears to be engaged",
           scanner.timeWaitingMs.get() < 10L);
       assertTrue("Report complier threads logged no execution time",
-          scanner.timeRunningMs.get() > 0L);
+          scanner.timeRunningNanos.get() > 0L);
 
       scanner.shutdown();
       assertFalse(scanner.getRunStatus());
@@ -822,7 +822,7 @@ public class TestDirectoryScanner {
       assertTrue("Throttle appears to be engaged",
           scanner.timeWaitingMs.get() < 10L);
       assertTrue("Report complier threads logged no execution time",
-          scanner.timeRunningMs.get() > 0L);
+          scanner.timeRunningNanos.get() > 0L);
 
       // Test with a 1ms limit. This also tests whether the scanner can be
       // shutdown cleanly in mid stride.
@@ -877,7 +877,7 @@ public class TestDirectoryScanner {
       LOG.info("RATIO: " + ratio);
       assertTrue("Throttle is too permissive", ratio > 8);
       assertTrue("Report complier threads logged no execution time",
-          scanner.timeRunningMs.get() > 0L);
+          scanner.timeRunningNanos.get() > 0L);
 
       // Test with a 0 limit, i.e. disabled
       conf.setInt(
@@ -892,7 +892,7 @@ public class TestDirectoryScanner {
       assertTrue("Throttle appears to be engaged",
           scanner.timeWaitingMs.get() < 10L);
       assertTrue("Report complier threads logged no execution time",
-          scanner.timeRunningMs.get() > 0L);
+          scanner.timeRunningNanos.get() > 0L);
 
       // Test with a 1000 limit, i.e. disabled
       conf.setInt(
@@ -907,7 +907,7 @@ public class TestDirectoryScanner {
       assertTrue("Throttle appears to be engaged",
           scanner.timeWaitingMs.get() < 10L);
       assertTrue("Report complier threads logged no execution time",
-          scanner.timeRunningMs.get() > 0L);
+          scanner.timeRunningNanos.get() > 0L);
 
       // Test that throttle works from regular start
       conf.setInt(DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_KEY, 1);
