@@ -108,8 +108,8 @@
     <hadoop-thirdparty-shaded-protobuf-prefix>${hadoop-thirdparty-shaded-prefix}.protobuf</hadoop-thirdparty-shaded-protobuf-prefix>
     <hadoop-thirdparty-shaded-guava-prefix>${hadoop-thirdparty-shaded-prefix}.com.google.common</hadoop-thirdparty-shaded-guava-prefix>
 
-    <zookeeper.version>3.9.5.3-4.5.0-0</zookeeper.version>
-    <curator.version>5.9.0.3-4.5.0-0</curator.version>
+    <zookeeper.version>3.9.5.3-4.5.0-1</zookeeper.version>
+    <curator.version>5.9.0.3-4.5.0-1</curator.version>
     <findbugs.version>3.0.5</findbugs.version>
     <dnsjava.version>3.6.1</dnsjava.version>
 
