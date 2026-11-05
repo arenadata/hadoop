@@ -369,7 +369,7 @@ org.eclipse.jetty.websocket:javax-websocket-server-impl:9.4.57.v20241219
 org.ehcache:ehcache:3.8.2
 org.ini4j:ini4j:0.5.4
 org.objenesis:objenesis:2.6
-org.xerial.snappy:snappy-java:1.1.10.9
+org.xerial.snappy:snappy-java:1.1.10.12
 org.yaml:snakeyaml:2.0
 org.wildfly.openssl:wildfly-openssl:2.2.5.Final
 software.amazon.awssdk:bundle:2.35.4
