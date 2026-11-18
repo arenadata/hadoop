@@ -22,14 +22,16 @@
   <parent>
     <artifactId>hadoop-yarn-server</artifactId>
     <groupId>org.apache.hadoop</groupId>
-    <version>3.4.3.3-4.5.0-0</version>
+    <version>3.4.3.3-4.5.0-1</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>hadoop-yarn-server-timelineservice-hbase-tests</artifactId>
-  <version>3.4.3.3-4.5.0-0</version>
+  <version>3.4.3.3-4.5.0-1</version>
   <name>Apache Hadoop YARN TimelineService HBase tests</name>
 
   <properties>
+    <!-- HBase protocol classes are generated with this Protobuf runtime. -->
+    <protobuf.version>${hbase.protobuf.version}</protobuf.version>
     <!-- Needed for generating FindBugs warnings using parent pom -->
     <yarn.basedir>${project.parent.parent.basedir}</yarn.basedir>
   </properties>
@@ -41,10 +43,9 @@
       <scope>test</scope>
     </dependency>
 
-    <!-- Since hbase 1.0.1 requires an older version of hadoop we enforce an
-         older version of hadoop just for the hbase unit tests. We also need to
-         exclude hadoop-common and hadoop-hdfs on each dependency that has
-         transitive depedencies on them.
+    <!-- Test the selected HBase release against this Hadoop release.
+         Explicit Hadoop dependencies below replace the transitive versions
+         excluded from HBase and Timeline Service dependencies.
     -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>

@@ -22,14 +22,19 @@
   <parent>
     <artifactId>hadoop-yarn-server</artifactId>
     <groupId>org.apache.hadoop</groupId>
-    <version>3.4.3.3-4.5.0-0</version>
+    <version>3.4.3.3-4.5.0-1</version>
   </parent>
 
   <modelVersion>4.0.0</modelVersion>
   <artifactId>hadoop-yarn-server-timelineservice-hbase</artifactId>
-  <version>3.4.3.3-4.5.0-0</version>
+  <version>3.4.3.3-4.5.0-1</version>
   <name>Apache Hadoop YARN TimelineService HBase Backend</name>
   <packaging>pom</packaging>
+
+  <properties>
+    <!-- Match the unshaded protocol classes supplied by the selected HBase release. -->
+    <protobuf.version>${hbase.protobuf.version}</protobuf.version>
+  </properties>
 
   <modules>
     <module>hadoop-yarn-server-timelineservice-hbase-client</module>

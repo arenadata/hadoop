@@ -19,11 +19,11 @@
   <parent>
     <artifactId>hadoop-yarn-server</artifactId>
     <groupId>org.apache.hadoop</groupId>
-    <version>3.4.3.3-4.5.0-0</version>
+    <version>3.4.3.3-4.5.0-1</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>hadoop-yarn-server-resourcemanager</artifactId>
-  <version>3.4.3.3-4.5.0-0</version>
+  <version>3.4.3.3-4.5.0-1</version>
   <name>Apache Hadoop YARN ResourceManager</name>
 
   <properties>
@@ -480,6 +480,8 @@
         <groupId>org.jsonschema2pojo</groupId>
         <artifactId>jsonschema2pojo-maven-plugin</artifactId>
         <configuration>
+          <!-- The generator runs on the Maven JDK, independent of the compiler target. -->
+          <includeGeneratedAnnotation>false</includeGeneratedAnnotation>
           <sourceDirectory>${basedir}/src/main/json_schema</sourceDirectory>
           <targetPackage>org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.schema</targetPackage>
           <outputDirectory>${basedir}/src/main/java</outputDirectory>
