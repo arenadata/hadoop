@@ -21,9 +21,15 @@
   <servlet>
     <servlet-name>webservices-driver</servlet-name>
     <servlet-class>com.sun.jersey.spi.container.servlet.ServletContainer</servlet-class>
+    <!-- Register the complete KMS resource/provider set explicitly. Jersey 1's
+         package scanner cannot read classes compiled for newer Java releases. -->
     <init-param>
-      <param-name>com.sun.jersey.config.property.packages</param-name>
-      <param-value>org.apache.hadoop.crypto.key.kms.server</param-value>
+      <param-name>com.sun.jersey.config.property.resourceConfigClass</param-name>
+      <param-value>com.sun.jersey.api.core.ClassNamesResourceConfig</param-value>
+    </init-param>
+    <init-param>
+      <param-name>com.sun.jersey.config.property.classnames</param-name>
+      <param-value>org.apache.hadoop.crypto.key.kms.server.KMS;org.apache.hadoop.crypto.key.kms.server.KMSExceptionsProvider;org.apache.hadoop.crypto.key.kms.server.KMSJSONReader;org.apache.hadoop.crypto.key.kms.server.KMSJSONWriter</param-value>
     </init-param>
 
     <!-- Enables detailed Jersey request/response logging -->

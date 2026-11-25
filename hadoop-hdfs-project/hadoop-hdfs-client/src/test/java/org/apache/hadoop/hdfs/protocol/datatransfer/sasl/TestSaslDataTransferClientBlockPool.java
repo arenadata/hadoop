@@ -65,7 +65,7 @@ public class TestSaslDataTransferClientBlockPool {
     Thread thread = Thread.currentThread();
     ClassLoader original = thread.getContextClassLoader();
     thread.setContextClassLoader(
-        new URLClassLoader(new URL[0], ClassLoader.getPlatformClassLoader()));
+        new URLClassLoader(new URL[0], ClassLoader.getSystemClassLoader().getParent()));
     try {
       assertEquals(BLOCK_POOL_ID,
           SaslDataTransferClient.getBlockPoolIdFromToken(newBlockToken(false)));
